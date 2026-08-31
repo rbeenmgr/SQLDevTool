@@ -1100,6 +1100,65 @@ require(['vs/editor/editor.main'], function () {
         }
     });
 
+    // Helper: Prettify HTML Code
+    function prettifyHtmlCode(html) {
+        if (!html || !html.trim()) return '';
+        let formatted = '';
+        let indent = '';
+        const tab = '  ';
+
+        const clean = html.replace(/>\s+</g, '><').trim();
+        const tokens = clean.split(/(?=<)/g);
+        const selfClosingTags = new Set(['area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'param', 'source', 'track', 'wbr']);
+
+        tokens.forEach(token => {
+            if (!token) return;
+            if (token.startsWith('</')) {
+                if (indent.length >= tab.length) {
+                    indent = indent.substring(tab.length);
+                }
+                formatted += indent + token + '\n';
+            } else if (token.startsWith('<')) {
+                const tagNameMatch = token.match(/^<([a-zA-Z0-9-]+)/);
+                const tagName = tagNameMatch ? tagNameMatch[1].toLowerCase() : '';
+                const isSelfClosing = token.endsWith('/>') || selfClosingTags.has(tagName) || token.startsWith('<!') || token.startsWith('<?');
+
+                formatted += indent + token + '\n';
+                if (!isSelfClosing) {
+                    indent += tab;
+                }
+            } else {
+                formatted += indent + token + '\n';
+            }
+        });
+
+        return formatted.trim();
+    }
+
+    // Helper: Minify / Inline HTML Code
+    function inlineHtmlCode(html) {
+        if (!html) return '';
+        return html
+            .replace(/\r?\n|\r/g, ' ')
+            .replace(/>\s+</g, '><')
+            .replace(/\s+/g, ' ')
+            .trim();
+    }
+
+    document.getElementById('html-prettify-btn').addEventListener('click', () => {
+        const value = htmlInputEditor.getValue();
+        if (!value.trim()) return;
+        const formatted = prettifyHtmlCode(value);
+        htmlInputEditor.setValue(formatted);
+    });
+
+    document.getElementById('html-inline-btn').addEventListener('click', () => {
+        const value = htmlInputEditor.getValue();
+        if (!value.trim()) return;
+        const inlined = inlineHtmlCode(value);
+        htmlInputEditor.setValue(inlined);
+    });
+
     document.getElementById('html-render-btn').addEventListener('click', () => {
         renderHtmlPreview();
     });
