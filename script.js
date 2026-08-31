@@ -1103,41 +1103,46 @@ require(['vs/editor/editor.main'], function () {
     // Helper: Prettify HTML Code
     function prettifyHtmlCode(html) {
         if (!html || !html.trim()) return '';
-        let formatted = '';
-        let indent = '';
-        const tab = '  ';
+
+        const tokenRegex = /(<!--[\s\S]*?-->|<!DOCTYPE[^>]*>|<style[\s\S]*?<\/style>|<script[\s\S]*?<\/script>|<\/[a-zA-Z0-9-]+>|<[a-zA-Z0-9-]+\b[^>]*\/>|<[a-zA-Z0-9-]+\b[^>]*>|[^<]+)/gi;
 
         const clean = html.replace(/>\s+</g, '><').trim();
-        const tokens = clean.split(/(?=<)/g);
-        const selfClosingTags = new Set(['area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'param', 'source', 'track', 'wbr']);
+        const tokens = clean.match(tokenRegex) || [clean];
+        const voidTags = new Set(['area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'param', 'source', 'track', 'wbr']);
+
+        let formatted = '';
+        let indentLevel = 0;
+        const tab = '  ';
 
         tokens.forEach(token => {
-            if (!token) return;
-            if (token.startsWith('</')) {
-                if (indent.length >= tab.length) {
-                    indent = indent.substring(tab.length);
-                }
-                formatted += indent + token + '\n';
-            } else if (token.startsWith('<')) {
-                const tagNameMatch = token.match(/^<([a-zA-Z0-9-]+)/);
-                const tagName = tagNameMatch ? tagNameMatch[1].toLowerCase() : '';
-                const isSelfClosing = token.endsWith('/>') || selfClosingTags.has(tagName) || token.startsWith('<!') || token.startsWith('<?');
+            const str = token.trim();
+            if (!str) return;
 
-                formatted += indent + token + '\n';
-                if (!isSelfClosing) {
-                    indent += tab;
+            if (str.startsWith('</')) {
+                indentLevel = Math.max(0, indentLevel - 1);
+                formatted += (formatted ? '\n' : '') + tab.repeat(indentLevel) + str;
+            } else if (str.toLowerCase().startsWith('<style') || str.toLowerCase().startsWith('<script')) {
+                formatted += (formatted ? '\n' : '') + tab.repeat(indentLevel) + str;
+            } else if (str.startsWith('<')) {
+                const tagNameMatch = str.match(/^<([a-zA-Z0-9-]+)/);
+                const tagName = tagNameMatch ? tagNameMatch[1].toLowerCase() : '';
+                const isVoid = voidTags.has(tagName) || str.endsWith('/>') || str.startsWith('<!') || str.startsWith('<!--');
+
+                formatted += (formatted ? '\n' : '') + tab.repeat(indentLevel) + str;
+                if (!isVoid) {
+                    indentLevel++;
                 }
             } else {
-                formatted += indent + token + '\n';
+                formatted += (formatted ? '\n' : '') + tab.repeat(indentLevel) + str;
             }
         });
 
-        return formatted.trim();
+        return formatted;
     }
 
     // Helper: Minify / Inline HTML Code
     function inlineHtmlCode(html) {
-        if (!html) return '';
+        if (!html || !html.trim()) return '';
         return html
             .replace(/\r?\n|\r/g, ' ')
             .replace(/>\s+</g, '><')
@@ -1145,19 +1150,27 @@ require(['vs/editor/editor.main'], function () {
             .trim();
     }
 
-    document.getElementById('html-prettify-btn').addEventListener('click', () => {
-        const value = htmlInputEditor.getValue();
-        if (!value.trim()) return;
-        const formatted = prettifyHtmlCode(value);
-        htmlInputEditor.setValue(formatted);
-    });
+    const prettifyBtn = document.getElementById('html-prettify-btn');
+    if (prettifyBtn) {
+        prettifyBtn.addEventListener('click', () => {
+            const value = htmlInputEditor.getValue();
+            if (!value.trim()) return;
+            const formatted = prettifyHtmlCode(value);
+            htmlInputEditor.setValue(formatted);
+            renderHtmlPreview();
+        });
+    }
 
-    document.getElementById('html-inline-btn').addEventListener('click', () => {
-        const value = htmlInputEditor.getValue();
-        if (!value.trim()) return;
-        const inlined = inlineHtmlCode(value);
-        htmlInputEditor.setValue(inlined);
-    });
+    const inlineBtn = document.getElementById('html-inline-btn');
+    if (inlineBtn) {
+        inlineBtn.addEventListener('click', () => {
+            const value = htmlInputEditor.getValue();
+            if (!value.trim()) return;
+            const inlined = inlineHtmlCode(value);
+            htmlInputEditor.setValue(inlined);
+            renderHtmlPreview();
+        });
+    }
 
     document.getElementById('html-render-btn').addEventListener('click', () => {
         renderHtmlPreview();
