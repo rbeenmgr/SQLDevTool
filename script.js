@@ -1207,4 +1207,76 @@ require(['vs/editor/editor.main'], function () {
         window.URL.revokeObjectURL(url);
     });
 
+    // --- Draggable Splitter / Resizer Logic ---
+    function makeResizable(resizerId, leftPaneId, rightPaneId, onResizeCallback) {
+        const resizer = document.getElementById(resizerId);
+        const leftPane = document.getElementById(leftPaneId);
+        const rightPane = document.getElementById(rightPaneId);
+        if (!resizer || !leftPane || !rightPane) return;
+
+        let isResizing = false;
+
+        resizer.addEventListener('mousedown', (e) => {
+            isResizing = true;
+            resizer.classList.add('resizing');
+            document.body.style.cursor = 'col-resize';
+            document.body.style.userSelect = 'none';
+            document.body.classList.add('is-resizing');
+            e.preventDefault();
+        });
+
+        document.addEventListener('mousemove', (e) => {
+            if (!isResizing) return;
+
+            const container = resizer.parentElement;
+            if (!container) return;
+            const containerRect = container.getBoundingClientRect();
+            const mouseX = e.clientX - containerRect.left;
+
+            const minPx = 100;
+            const maxPx = containerRect.width - 100;
+
+            const leftWidth = Math.max(minPx, Math.min(mouseX, maxPx));
+            const leftPercent = (leftWidth / containerRect.width) * 100;
+
+            leftPane.style.flex = 'none';
+            leftPane.style.width = `${leftPercent}%`;
+            rightPane.style.flex = '1';
+            rightPane.style.width = 'auto';
+
+            if (onResizeCallback) {
+                onResizeCallback();
+            }
+        });
+
+        document.addEventListener('mouseup', () => {
+            if (isResizing) {
+                isResizing = false;
+                resizer.classList.remove('resizing');
+                document.body.style.cursor = '';
+                document.body.style.userSelect = '';
+                document.body.classList.remove('is-resizing');
+
+                if (onResizeCallback) {
+                    onResizeCallback();
+                }
+            }
+        });
+    }
+
+    // Initialize resizer for HTML Renderer
+    makeResizable('html-resizer', 'html-input', 'html-preview-container', () => {
+        if (typeof htmlInputEditor !== 'undefined') {
+            htmlInputEditor.layout();
+        }
+    });
+
+    // Initialize resizer for Formatter
+    makeResizable('format-resizer', 'format-input', 'format-output', () => {
+        if (typeof formatInputEditor !== 'undefined' && typeof formatOutputEditor !== 'undefined') {
+            formatInputEditor.layout();
+            formatOutputEditor.layout();
+        }
+    });
+
 });

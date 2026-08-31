@@ -345,3 +345,23 @@ body {
     border: none;
     background-color: #ffffff;
 }
+
+/* --- Draggable Resizer Handle --- */
+.resizer {
+    width: 6px;
+    background-color: var(--border-color);
+    cursor: col-resize;
+    user-select: none;
+    z-index: 10;
+    transition: background-color 0.2s ease;
+    flex-shrink: 0;
+}
+
+.resizer:hover,
+.resizer.resizing {
+    background-color: var(--accent-color);
+}
+
+body.is-resizing iframe {
+    pointer-events: none !important;
+}
