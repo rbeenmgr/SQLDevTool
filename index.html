@@ -58,6 +58,14 @@
                     <line x1="15" y1="3" x2="15" y2="21"></line>
                 </svg>
             </div>
+            <div class="nav-item" data-target="view-html-render" title="HTML Renderer & Preview">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                    stroke-linecap="round" stroke-linejoin="round">
+                    <rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect>
+                    <line x1="8" y1="21" x2="16" y2="21"></line>
+                    <line x1="12" y1="17" x2="12" y2="21"></line>
+                </svg>
+            </div>
             <div class="nav-spacer"></div>
             <button id="theme-toggle" class="nav-item icon-btn" aria-label="Toggle Theme">
                 <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
@@ -274,6 +282,36 @@
                 </div>
                 <div class="editors-row">
                     <div id="excel-input" class="single-editor-pane" style="width: 100%;"></div>
+                </div>
+            </main>
+        </section>
+
+        <section id="view-html-render" class="view">
+            <header class="app-header">
+                <div class="logo">
+                    <h1>HTML Renderer & Preview</h1>
+                </div>
+                <div class="controls">
+                    <div class="option-item">
+                        <input type="checkbox" id="html-auto-update" checked>
+                        <label for="html-auto-update">Auto Update</label>
+                    </div>
+                    <button id="html-render-btn" class="control-item primary-btn" aria-label="Render HTML">Render</button>
+                    <button id="html-open-tab-btn" class="control-item" aria-label="Open in New Tab">Open in New Tab</button>
+                    <button id="html-copy-btn" class="control-item" aria-label="Copy HTML">Copy</button>
+                    <button id="html-download-btn" class="control-item" aria-label="Download HTML">Download</button>
+                </div>
+            </header>
+            <main class="editor-container">
+                <div class="editor-header">
+                    <div class="pane-title">HTML Code Input</div>
+                    <div class="pane-title">Rendered Preview</div>
+                </div>
+                <div class="editors-row">
+                    <div id="html-input" class="single-editor-pane"></div>
+                    <div id="html-preview-container" class="single-editor-pane">
+                        <iframe id="html-preview-frame" sandbox="allow-scripts allow-modals allow-forms allow-popups allow-same-origin" title="HTML Preview"></iframe>
+                    </div>
                 </div>
             </main>
         </section>

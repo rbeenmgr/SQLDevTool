@@ -32,6 +32,11 @@ Built with **HTML5**, **Vanilla CSS3**, **JavaScript (ES6)**, **Monaco Editor**,
 - **JSON / CSV to Excel**: Convert raw JSON object arrays or CSV text directly into styled Microsoft Excel (`.xlsx`) workbooks.
 - **Customizable Sheets**: Specify output file name and worksheet title.
 
+### 🌐 6. HTML Renderer & Live Preview
+- **Live HTML/CSS/JS Preview**: Side-by-side Monaco HTML code editor and live sandboxed iframe preview frame.
+- **Auto-Update & Manual Render**: Real-time debounced updates as you type with an option to toggle auto-update on or off.
+- **Export & Inspect**: Open rendered output in a new browser tab, copy HTML string, or download as `.html` file.
+
 ---
 
 ## 🚀 Quick Start / Setup

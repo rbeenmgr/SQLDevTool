@@ -238,6 +238,8 @@ require(['vs/editor/editor.main'], function () {
                     jsonOutputEditor.layout();
                 } else if (targetId === 'view-excel-gen') {
                     excelInputEditor.layout();
+                } else if (targetId === 'view-html-render') {
+                    htmlInputEditor.layout();
                 }
             }, 10);
         });
@@ -256,6 +258,8 @@ require(['vs/editor/editor.main'], function () {
             jsonOutputEditor.layout();
         } else if (document.getElementById('view-excel-gen').classList.contains('active')) {
             excelInputEditor.layout();
+        } else if (document.getElementById('view-html-render').classList.contains('active')) {
+            htmlInputEditor.layout();
         }
     });
 
@@ -1012,6 +1016,123 @@ require(['vs/editor/editor.main'], function () {
         } catch (err) {
             alert(`Error exporting to Excel:\n${err.message}`);
         }
+    });
+
+    // --- HTML Renderer & Preview (View 6) ---
+    const defaultHtmlContent = `<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HTML Preview</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            margin: 0;
+            padding: 24px;
+            background: #f8fafc;
+            color: #1e293b;
+        }
+        .card {
+            background: #ffffff;
+            border-radius: 12px;
+            padding: 24px;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -2px rgba(0, 0, 0, 0.1);
+            max-width: 500px;
+            margin: 0 auto;
+        }
+        .btn {
+            background-color: #3b82f6;
+            color: white;
+            border: none;
+            padding: 10px 18px;
+            border-radius: 6px;
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        .btn:hover {
+            background-color: #2563eb;
+        }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h2>⚡ Live HTML Preview</h2>
+        <p>Type or paste your HTML, CSS, and JavaScript here to see real-time updates.</p>
+        <button class="btn" onclick="alert('Hello from HTML Renderer!')">Click Me</button>
+    </div>
+</body>
+</html>`;
+
+    const htmlInputEditor = monaco.editor.create(document.getElementById('html-input'), {
+        value: defaultHtmlContent,
+        language: "html",
+        theme: 'vs-dark',
+        automaticLayout: false,
+        minimap: { enabled: false },
+        readOnly: false,
+        scrollBeyondLastLine: false,
+        fontSize: 14,
+        fontFamily: "'JetBrains Mono', 'Courier New', monospace"
+    });
+
+    const htmlPreviewFrame = document.getElementById('html-preview-frame');
+    const htmlAutoUpdateCb = document.getElementById('html-auto-update');
+    let renderTimeout = null;
+
+    function renderHtmlPreview() {
+        const content = htmlInputEditor.getValue();
+        htmlPreviewFrame.srcdoc = content;
+    }
+
+    // Initial render
+    renderHtmlPreview();
+
+    // Auto-update with debounce
+    htmlInputEditor.onDidChangeModelContent(() => {
+        if (htmlAutoUpdateCb && htmlAutoUpdateCb.checked) {
+            if (renderTimeout) clearTimeout(renderTimeout);
+            renderTimeout = setTimeout(() => {
+                renderHtmlPreview();
+            }, 300);
+        }
+    });
+
+    document.getElementById('html-render-btn').addEventListener('click', () => {
+        renderHtmlPreview();
+    });
+
+    document.getElementById('html-open-tab-btn').addEventListener('click', () => {
+        const content = htmlInputEditor.getValue();
+        const blob = new Blob([content], { type: 'text/html' });
+        const url = URL.createObjectURL(blob);
+        window.open(url, '_blank');
+    });
+
+    document.getElementById('html-copy-btn').addEventListener('click', () => {
+        const value = htmlInputEditor.getValue();
+        navigator.clipboard.writeText(value).then(() => {
+            const btn = document.getElementById('html-copy-btn');
+            const originalText = btn.innerText;
+            btn.innerText = 'Copied!';
+            setTimeout(() => btn.innerText = originalText, 2000);
+        });
+    });
+
+    document.getElementById('html-download-btn').addEventListener('click', () => {
+        const value = htmlInputEditor.getValue();
+        if (!value) return;
+        const blob = new Blob([value], { type: 'text/html' });
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `preview.html`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        window.URL.revokeObjectURL(url);
     });
 
 });
