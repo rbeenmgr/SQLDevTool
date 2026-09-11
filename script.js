@@ -511,6 +511,274 @@ require(['vs/editor/editor.main'], function () {
         }
     });
 
+    // --- Data Validation & SQL Schema Inference Engine ---
+    const SqlSchemaInferrer = {
+        isNullOrEmpty(val) {
+            return val === null || val === undefined || (typeof val === 'string' && val.trim() === '');
+        },
+
+        // Strict date patterns (ISO 8601, slashed, dotted, named month)
+        DATE_PATTERNS: [
+            /^\d{4}-\d{1,2}-\d{1,2}(?:[T\s]\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?)?$/,
+            /^\d{4}\/\d{1,2}\/\d{1,2}(?:[T\s]\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?)?$/,
+            /^\d{1,2}\/\d{1,2}\/\d{4}(?:[T\s]\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?)?$/,
+            /^\d{4}\.\d{1,2}\.\d{1,2}(?:[T\s]\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?)?$/,
+            /^\d{1,2}\.\d{1,2}\.\d{4}(?:[T\s]\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?)?$/,
+            /^\d{1,2}[-\s](?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[-\s]\d{2,4}(?:[T\s]\d{1,2}:\d{2}(?::\d{2})?)?$/i,
+            /^(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[-\s]\d{1,2},?[-\s]\d{2,4}(?:[T\s]\d{1,2}:\d{2}(?::\d{2})?)?$/i
+        ],
+
+        GUID_PATTERN: /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/,
+
+        // Validate a single cell value
+        validateCell(val) {
+            if (this.isNullOrEmpty(val)) {
+                return { type: 'NULL', val: null };
+            }
+
+            // 1. Boolean check
+            if (typeof val === 'boolean' || val === 'true' || val === 'false' || val === 'TRUE' || val === 'FALSE') {
+                return { type: 'BIT', val: val === true || String(val).toLowerCase() === 'true' };
+            }
+
+            // 2. Pure number checks
+            if (typeof val === 'number') {
+                if (Number.isInteger(val)) {
+                    if (val >= -2147483648 && val <= 2147483647) {
+                        return { type: 'INT', val };
+                    } else {
+                        return { type: 'BIGINT', val };
+                    }
+                } else if (!isNaN(val)) {
+                    const str = val.toString();
+                    const parts = str.split('.');
+                    const precision = (parts[0].replace('-', '').length) + (parts[1] ? parts[1].length : 0);
+                    const scale = parts[1] ? parts[1].length : 0;
+                    return { type: 'DECIMAL', precision, scale, val };
+                }
+            }
+
+            // 3. Date instance (from XLSX cellDates: true)
+            if (val instanceof Date) {
+                if (!isNaN(val.getTime())) {
+                    const hasTime = val.getHours() !== 0 || val.getMinutes() !== 0 || val.getSeconds() !== 0 || val.getMilliseconds() !== 0;
+                    return { type: 'DATE_TIME', hasTime, val };
+                }
+            }
+
+            const strVal = String(val).trim();
+
+            // 4. String of pure integer digits -> MUST be INT or BIGINT, NEVER DATETIME
+            if (/^[+-]?\d+$/.test(strVal)) {
+                const num = Number(strVal);
+                if (num >= -2147483648 && num <= 2147483647 && strVal.length <= 10) {
+                    return { type: 'INT', val: num };
+                } else {
+                    return { type: 'BIGINT', val: strVal };
+                }
+            }
+
+            // 5. String of decimal number -> DECIMAL, NEVER DATETIME
+            if (/^[+-]?\d+\.\d+$/.test(strVal)) {
+                const parts = strVal.replace(/^[+-]/, '').split('.');
+                const precision = parts[0].length + parts[1].length;
+                const scale = parts[1].length;
+                return { type: 'DECIMAL', precision, scale, val: Number(strVal) };
+            }
+
+            // 6. Strict Date String check
+            // Strict regex match ensures pure numeric strings are never parsed as dates
+            const matchesDatePattern = this.DATE_PATTERNS.some(pat => pat.test(strVal));
+            if (matchesDatePattern) {
+                const parsedMs = Date.parse(strVal);
+                if (!isNaN(parsedMs)) {
+                    const d = new Date(parsedMs);
+                    const year = d.getFullYear();
+                    // Valid SQL Server DATETIME / DATE range: 1753 to 9999
+                    if (year >= 1753 && year <= 9999) {
+                        const hasTime = strVal.includes(':') || d.getHours() !== 0 || d.getMinutes() !== 0 || d.getSeconds() !== 0;
+                        return { type: 'DATE_TIME', hasTime, val: d };
+                    }
+                }
+            }
+
+            // 7. GUID / UUID
+            if (this.GUID_PATTERN.test(strVal)) {
+                return { type: 'GUID', val: strVal };
+            }
+
+            // 8. Fallback to String / NVARCHAR
+            return { type: 'STRING', length: strVal.length, val: strVal };
+        },
+
+        // Infer column types across rows
+        inferColumns(headers, rows, scanLimit = 5000) {
+            const limit = Math.min(rows.length, scanLimit);
+
+            return headers.map((header, c) => {
+                let hasNull = false;
+                let maxLen = 0;
+                let maxPrecision = 18;
+                let maxScale = 0;
+                let anyTime = false;
+
+                // Candidate flags
+                let canBeBit = true;
+                let canBeInt = true;
+                let canBeBigInt = true;
+                let canBeDecimal = true;
+                let canBeDateTime = true;
+                let canBeGuid = true;
+                let nonNullCount = 0;
+
+                for (let r = 0; r < limit; r++) {
+                    const rawVal = rows[r] ? rows[r][c] : null;
+                    const res = this.validateCell(rawVal);
+
+                    if (res.type === 'NULL') {
+                        hasNull = true;
+                        continue;
+                    }
+
+                    nonNullCount++;
+                    const strLen = String(rawVal).length;
+                    if (strLen > maxLen) maxLen = strLen;
+
+                    switch (res.type) {
+                        case 'BIT':
+                            canBeInt = false;
+                            canBeBigInt = false;
+                            canBeDecimal = false;
+                            canBeDateTime = false;
+                            canBeGuid = false;
+                            break;
+                        case 'INT':
+                            canBeBit = false;
+                            canBeDateTime = false;
+                            canBeGuid = false;
+                            break;
+                        case 'BIGINT':
+                            canBeBit = false;
+                            canBeInt = false;
+                            canBeDateTime = false;
+                            canBeGuid = false;
+                            break;
+                        case 'DECIMAL':
+                            canBeBit = false;
+                            canBeInt = false;
+                            canBeBigInt = false;
+                            canBeDateTime = false;
+                            canBeGuid = false;
+                            if (res.scale > maxScale) maxScale = res.scale;
+                            if (res.precision > maxPrecision) maxPrecision = res.precision;
+                            break;
+                        case 'DATE_TIME':
+                            canBeBit = false;
+                            canBeInt = false;
+                            canBeBigInt = false;
+                            canBeDecimal = false;
+                            canBeGuid = false;
+                            if (res.hasTime) anyTime = true;
+                            break;
+                        case 'GUID':
+                            canBeBit = false;
+                            canBeInt = false;
+                            canBeBigInt = false;
+                            canBeDecimal = false;
+                            canBeDateTime = false;
+                            break;
+                        case 'STRING':
+                            canBeBit = false;
+                            canBeInt = false;
+                            canBeBigInt = false;
+                            canBeDecimal = false;
+                            canBeDateTime = false;
+                            canBeGuid = false;
+                            break;
+                    }
+                }
+
+                // Decide SQL data type
+                let type = '';
+                let isNullable = hasNull || nonNullCount === 0 || limit < rows.length;
+
+                if (nonNullCount === 0) {
+                    type = 'NVARCHAR(50)';
+                } else if (canBeBit) {
+                    type = 'BIT';
+                } else if (canBeInt) {
+                    type = 'INT';
+                } else if (canBeBigInt) {
+                    type = 'BIGINT';
+                } else if (canBeDecimal) {
+                    const finalScale = Math.min(Math.max(maxScale, 2), 4);
+                    const finalPrecision = Math.max(maxPrecision, 18);
+                    type = `DECIMAL(${Math.min(finalPrecision, 38)},${finalScale})`;
+                } else if (canBeDateTime) {
+                    type = anyTime ? 'DATETIME' : 'DATE';
+                } else if (canBeGuid) {
+                    type = 'UNIQUEIDENTIFIER';
+                } else {
+                    let finalLen = maxLen <= 50 ? 50 : maxLen <= 255 ? 255 : maxLen <= 4000 ? 4000 : 'MAX';
+                    type = `NVARCHAR(${finalLen})`;
+                }
+
+                return {
+                    header,
+                    type,
+                    isNullable,
+                    maxLen,
+                    nonNullCount
+                };
+            });
+        },
+
+        // Format value safely for SQL INSERT statements
+        formatSqlValue(val, colType) {
+            if (this.isNullOrEmpty(val)) return 'NULL';
+
+            const typeUpper = colType.toUpperCase();
+
+            if (typeUpper === 'BIT') {
+                if (val === true || String(val).toLowerCase() === 'true' || val === 1 || val === '1') return '1';
+                return '0';
+            }
+
+            if (typeUpper.startsWith('INT') || typeUpper.startsWith('BIGINT') || typeUpper.startsWith('DECIMAL')) {
+                const numVal = Number(String(val).trim());
+                return isNaN(numVal) ? `'${String(val).replace(/'/g, "''")}'` : String(val).trim();
+            }
+
+            if (typeUpper === 'DATETIME' || typeUpper === 'DATE') {
+                if (val instanceof Date && !isNaN(val.getTime())) {
+                    if (typeUpper === 'DATE') {
+                        return `'${val.toISOString().slice(0, 10)}'`;
+                    }
+                    const iso = val.toISOString().slice(0, 19).replace('T', ' ');
+                    return `'${iso}'`;
+                }
+                const ms = Date.parse(val);
+                if (!isNaN(ms)) {
+                    const d = new Date(ms);
+                    if (typeUpper === 'DATE') {
+                        return `'${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}'`;
+                    }
+                    const iso = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`;
+                    return `'${iso}'`;
+                }
+                return `'${String(val).replace(/'/g, "''")}'`;
+            }
+
+            if (typeUpper === 'UNIQUEIDENTIFIER') {
+                return `'${String(val).trim()}'`;
+            }
+
+            // Strings: escape single quotes
+            return `N'${String(val).replace(/'/g, "''")}'`;
+        }
+    };
+    window.SqlSchemaInferrer = SqlSchemaInferrer;
+
     function handleFile(file) {
         // Visual feedback
         const dropText = dropZone.querySelector('.drop-text p');
@@ -519,7 +787,7 @@ require(['vs/editor/editor.main'], function () {
         const reader = new FileReader();
         reader.onload = (e) => {
             const data = new Uint8Array(e.target.result);
-            const workbook = XLSX.read(data, { type: 'array' });
+            const workbook = XLSX.read(data, { type: 'array', cellDates: true });
             currentWorkbook = workbook;
 
             // Populate Sheet Selector
@@ -584,7 +852,6 @@ require(['vs/editor/editor.main'], function () {
 
         if (hasHeader) {
             headers = data[0].map(h => h ? h.toString().trim().replace(/\s+/g, '_') : 'Column_x');
-            // Duplicate header check?
             rows = data.slice(1);
         } else {
             // Generate Col1, Col2...
@@ -596,72 +863,25 @@ require(['vs/editor/editor.main'], function () {
 
         if (rows.length === 0) return `-- No data rows found in ${tableName}`;
 
-        // Type Inference
-        // We'll scan up to 1000 rows for types to be safe/fast
-        const scanLimit = Math.min(rows.length, 1000);
-        const colTypes = headers.map(() => ({ type: 'INT', length: 0, isNullable: false }));
-
-        for (let c = 0; c < headers.length; c++) {
-            let isInt = true;
-            let isDecimal = true; // Int is also decimal
-            let isDate = true;
-            let maxLen = 0;
-            let hasNull = false;
-
-            for (let r = 0; r < scanLimit; r++) {
-                const val = rows[r][c];
-                if (val === null || val === undefined || val === '') {
-                    hasNull = true;
-                    continue;
-                }
-
-                const strVal = val.toString();
-                if (strVal.length > maxLen) maxLen = strVal.length;
-
-                // Check Number
-                if (typeof val === 'number') {
-                    if (!Number.isInteger(val)) isInt = false;
-                } else {
-                    // It's a string, try parse
-                    if (isNaN(val) || strVal.trim() === '') {
-                        isInt = false;
-                        isDecimal = false;
-                    } else {
-                        if (!Number.isInteger(Number(val))) isInt = false;
-                    }
-                }
-
-                // Check Date (simple check)
-                // SheetJS parses dates as numbers sometimes or strings. 
-                // If it's a number, it might be an Excel serial date, but we can't be sure unless we know cell format.
-                // For simplicity, let's treat everything not strictly a JS Date object or ISO string as NOT date for safety, 
-                // unless we want to try parsing strings.
-                // Let's default to NVARCHAR mostly unless sure.
-                if (!(val instanceof Date) && isNaN(Date.parse(val))) {
-                    isDate = false;
-                }
-            }
-
-            // Decide Type
-            if (isDate && maxLen > 0) colTypes[c].type = 'DATETIME';
-            // Prefer decimal/int only if ALL non-nulls were valid numbers
-            else if (isInt && maxLen > 0) colTypes[c].type = 'INT';
-            else if (isDecimal && maxLen > 0) colTypes[c].type = 'DECIMAL(18,4)'; // Generic Decimal
-            else {
-                // Varchar
-                // Round up length to nearest power of 2 or typical buckets
-                let finalLen = maxLen < 50 ? 50 : maxLen < 255 ? 255 : maxLen < 4000 ? 4000 : 'MAX';
-                colTypes[c].type = `NVARCHAR(${finalLen})`;
-            }
-        }
+        // Validate data and infer SQL column schema using SqlSchemaInferrer
+        const colTypes = SqlSchemaInferrer.inferColumns(headers, rows);
 
         // 1. CREATE TABLE
-        let script = `CREATE TABLE ${tableName} (\n`;
-        script += headers.map((h, i) => `    [${h}] ${colTypes[i].type}${colTypes[i].isNullable ? '' : ' NULL'}`).join(',\n');
+        let script = `-- =============================================\n`;
+        script += `-- Table: ${tableName}\n`;
+        script += `-- Total Rows: ${rows.length}\n`;
+        script += `-- Validated Schema:\n`;
+        colTypes.forEach(c => {
+            script += `--   [${c.header}] -> ${c.type} (${c.nonNullCount} non-null values)\n`;
+        });
+        script += `-- =============================================\n\n`;
+
+        script += `IF OBJECT_ID('tempdb..${tableName}') IS NOT NULL DROP TABLE ${tableName};\n\n`;
+        script += `CREATE TABLE ${tableName} (\n`;
+        script += colTypes.map(c => `    [${c.header}] ${c.type}${c.isNullable ? ' NULL' : ' NOT NULL'}`).join(',\n');
         script += `\n);\n\n`;
 
-        // 2. INSERT Data
-        // Batch every 1000 rows
+        // 2. INSERT Data (batched every 1000 rows)
         const BATCH_SIZE = 1000;
         for (let i = 0; i < rows.length; i += BATCH_SIZE) {
             const batch = rows.slice(i, i + BATCH_SIZE);
@@ -669,24 +889,8 @@ require(['vs/editor/editor.main'], function () {
 
             const rowStrings = batch.map(row => {
                 const vals = headers.map((_, colIndex) => {
-                    let val = row[colIndex];
-                    if (val === null || val === undefined || val === '') return 'NULL';
-
-                    const type = colTypes[colIndex].type;
-
-                    if (type.startsWith('INT') || type.startsWith('DECIMAL')) {
-                        return val; // Numbers don't need quotes
-                    } else if (type === 'DATETIME') {
-                        // Format date to 'YYYY-MM-DD HH:mm:ss'
-                        // If it's a SheetJS number (serial), might need conversion, but assumed Date obj or string above
-                        if (val instanceof Date) {
-                            return `'${val.toISOString().slice(0, 19).replace('T', ' ')}'`;
-                        }
-                        return `'${val}'`;
-                    } else {
-                        // String escaping: replace ' with ''
-                        return `'${val.toString().replace(/'/g, "''")}'`;
-                    }
+                    const rawVal = row[colIndex];
+                    return SqlSchemaInferrer.formatSqlValue(rawVal, colTypes[colIndex].type);
                 });
                 return `(${vals.join(', ')})`;
             });
@@ -695,7 +899,7 @@ require(['vs/editor/editor.main'], function () {
             script += `;\n\n`;
         }
 
-        script += `-- Inserted ${rows.length} rows.\n`;
+        script += `-- Successfully inserted ${rows.length} rows.\n`;
         script += `SELECT * FROM ${tableName};\n`;
 
         return script;
@@ -775,7 +979,7 @@ require(['vs/editor/editor.main'], function () {
         const reader = new FileReader();
         reader.onload = (e) => {
             const data = new Uint8Array(e.target.result);
-            const workbook = XLSX.read(data, { type: 'array' });
+            const workbook = XLSX.read(data, { type: 'array', cellDates: true });
             jsonCurrentWorkbook = workbook;
 
             jsonSheetSelector.innerHTML = '';
@@ -872,47 +1076,8 @@ require(['vs/editor/editor.main'], function () {
         // SSMS OPENJSON Script mode
         monaco.editor.setModelLanguage(jsonOutputEditor.getModel(), 'sql');
 
-        // Type Inference for WITH clause schema
-        const scanLimit = Math.min(rows.length, 1000);
-        const colTypes = headers.map(() => ({ type: 'INT', maxLen: 0 }));
-
-        for (let c = 0; c < headers.length; c++) {
-            let isInt = true;
-            let isDecimal = true;
-            let isDate = true;
-            let maxLen = 0;
-
-            for (let r = 0; r < scanLimit; r++) {
-                const val = rows[r][c];
-                if (val === null || val === undefined || val === '') continue;
-
-                const strVal = val.toString();
-                if (strVal.length > maxLen) maxLen = strVal.length;
-
-                if (typeof val === 'number') {
-                    if (!Number.isInteger(val)) isInt = false;
-                } else {
-                    if (isNaN(val) || strVal.trim() === '') {
-                        isInt = false;
-                        isDecimal = false;
-                    } else {
-                        if (!Number.isInteger(Number(val))) isInt = false;
-                    }
-                }
-
-                if (!(val instanceof Date) && isNaN(Date.parse(val))) {
-                    isDate = false;
-                }
-            }
-
-            if (isDate && maxLen > 0) colTypes[c].type = 'DATETIME';
-            else if (isInt && maxLen > 0) colTypes[c].type = 'INT';
-            else if (isDecimal && maxLen > 0) colTypes[c].type = 'DECIMAL(18,4)';
-            else {
-                let finalLen = maxLen < 50 ? 50 : maxLen < 255 ? 255 : maxLen < 4000 ? 4000 : 'MAX';
-                colTypes[c].type = `NVARCHAR(${finalLen})`;
-            }
-        }
+        // Type Inference for WITH clause schema using SqlSchemaInferrer
+        const colTypes = SqlSchemaInferrer.inferColumns(headers, rows);
 
         const jsonPayload = JSON.stringify(objects, null, prettify ? 2 : 0);
         // Escape single quotes inside SQL N'...' literal
@@ -921,16 +1086,21 @@ require(['vs/editor/editor.main'], function () {
         let script = `-- =============================================\n`;
         script += `-- SSMS OPENJSON Insert Script for ${tableName}\n`;
         script += `-- Total Rows: ${rows.length}\n`;
+        script += `-- Validated Schema:\n`;
+        colTypes.forEach(c => {
+            script += `--   [${c.header}] -> ${c.type}\n`;
+        });
         script += `-- =============================================\n\n`;
+
         script += `DECLARE @json NVARCHAR(MAX) = N'${sqlEscapedJson}';\n\n`;
         script += `IF OBJECT_ID('tempdb..${tableName}') IS NOT NULL DROP TABLE ${tableName};\n\n`;
         script += `CREATE TABLE ${tableName} (\n`;
-        script += headers.map((h, i) => `    [${h}] ${colTypes[i].type} NULL`).join(',\n');
+        script += colTypes.map(c => `    [${c.header}] ${c.type} NULL`).join(',\n');
         script += `\n);\n\n`;
         script += `INSERT INTO ${tableName} (\n    ${headers.map(h => `[${h}]`).join(', ')}\n)\n`;
         script += `SELECT \n    ${headers.map(h => `[${h}]`).join(',\n    ')}\n`;
         script += `FROM OPENJSON(@json)\nWITH (\n`;
-        script += headers.map((h, i) => `    [${h}] ${colTypes[i].type} '$.${h}'`).join(',\n');
+        script += colTypes.map(c => `    [${c.header}] ${c.type} '$.${c.header}'`).join(',\n');
         script += `\n);\n\n`;
         script += `-- Verify inserted data:\n`;
         script += `SELECT * FROM ${tableName};\n`;

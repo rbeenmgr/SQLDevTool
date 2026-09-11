@@ -20,11 +20,11 @@ Built with **HTML5**, **Vanilla CSS3**, **JavaScript (ES6)**, **Monaco Editor**,
 
 ### 📊 3. Sheet to SQL Generator
 - **Bulk Insert Script Generator**: Upload Excel (`.xlsx`, `.xls`) or `.csv` files.
-- **T-SQL Schema Inference**: Automatically infers column data types (`INT`, `DECIMAL(18,4)`, `DATETIME`, `NVARCHAR`).
-- **Batched Inserts**: Produces `CREATE TABLE` and `INSERT INTO ... VALUES` statements batched every 1,000 rows.
+- **Robust Data Validation & T-SQL Schema Inference**: Rigorously validates all cell values before determining SQL data types (`BIT`, `INT`, `BIGINT`, `DECIMAL(p,s)`, `DATETIME`, `DATE`, `UNIQUEIDENTIFIER`, and `NVARCHAR(n)`). Numbers and year identifiers are strictly validated to prevent false positives as datetimes.
+- **Batched Inserts**: Produces `CREATE TABLE` and `INSERT INTO ... VALUES` statements batched every 1,000 rows with safe type-based SQL escaping.
 
 ### 📄 4. Sheet to JSON & SSMS OPENJSON Script Generator
-- **SSMS T-SQL OPENJSON Generator**: Upload spreadsheets and generate SQL Server scripts utilizing `DECLARE @json NVARCHAR(MAX)` and `INSERT INTO #TempTable (...) SELECT ... FROM OPENJSON(@json) WITH (...)`.
+- **SSMS T-SQL OPENJSON Generator**: Upload spreadsheets and generate SQL Server scripts utilizing `DECLARE @json NVARCHAR(MAX)` and `INSERT INTO #TempTable (...) SELECT ... FROM OPENJSON(@json) WITH (...)` using validated column schemas.
 - **Prettify Toggle**: Option to format JSON payloads as indented structures or compact strings.
 - **Multi-Output Modes**: Export as **SSMS OPENJSON Script**, **Raw JSON Array**, or **Mongo insertMany**.
 
