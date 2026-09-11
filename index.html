@@ -191,7 +191,11 @@
                     </div>
                     <div class="option-item">
                         <input type="checkbox" id="header-row" checked>
-                        <label for="header-row">First row contains headers</label>
+                        <label for="header-row">Headers</label>
+                    </div>
+                    <div class="option-item">
+                        <input type="checkbox" id="sql-sanitize-headers">
+                        <label for="sql-sanitize-headers" title="Replace dots (.) and special characters with underscore (_)">Sanitize Headers</label>
                     </div>
                     <div class="option-item">
                         <button id="generate-sql-btn" class="control-item primary-btn">Generate SQL</button>
@@ -244,6 +248,10 @@
                     <div class="option-item">
                         <input type="checkbox" id="json-header-row" checked>
                         <label for="json-header-row">Headers</label>
+                    </div>
+                    <div class="option-item">
+                        <input type="checkbox" id="json-sanitize-headers">
+                        <label for="json-sanitize-headers" title="Replace dots (.) and special characters with underscore (_)">Sanitize Headers</label>
                     </div>
                     <div class="option-item">
                         <input type="checkbox" id="json-prettify" checked>

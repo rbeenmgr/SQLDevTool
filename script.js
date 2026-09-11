@@ -775,6 +775,35 @@ require(['vs/editor/editor.main'], function () {
 
             // Strings: escape single quotes
             return `N'${String(val).replace(/'/g, "''")}'`;
+        },
+
+        // Format JSON path for SQL Server OPENJSON WITH clause
+        // Handles dots (.), spaces, hyphens, and special characters safely
+        formatJsonPath(propName) {
+            const str = String(propName);
+            // Standard simple identifier: letters, numbers, underscores (not starting with a digit)
+            if (/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(str)) {
+                return `'$.${str}'`;
+            }
+            // Contains dots, dashes, spaces, symbols: must enclose in double quotes for OPENJSON
+            // e.g. '$."User.Name"' or '$."Order-ID"'
+            const escaped = str.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/'/g, "''");
+            return `'$."${escaped}"'`;
+        },
+
+        // Helper to sanitize column names if requested
+        sanitizeHeader(header) {
+            if (!header) return 'Column_x';
+            let str = String(header).trim();
+            // Replace dots, spaces, hyphens, and non-alphanumeric chars with underscore
+            str = str.replace(/[\.\s\-\/\\]+/g, '_').replace(/[^a-zA-Z0-9_]/g, '_');
+            // Collapse multiple underscores
+            str = str.replace(/_+/g, '_');
+            // Ensure does not start with digit
+            if (/^[0-9]/.test(str)) {
+                str = 'Col_' + str;
+            }
+            return str || 'Column_x';
         }
     };
     window.SqlSchemaInferrer = SqlSchemaInferrer;
@@ -835,23 +864,28 @@ require(['vs/editor/editor.main'], function () {
 
         const tableName = document.getElementById('table-name').value || "#TempTable";
         const hasHeader = document.getElementById('header-row').checked;
+        const sanitizeHeaders = document.getElementById('sql-sanitize-headers') ? document.getElementById('sql-sanitize-headers').checked : false;
 
         try {
-            const sql = generateSQL(loadedData, tableName, hasHeader);
+            const sql = generateSQL(loadedData, tableName, hasHeader, sanitizeHeaders);
             sqlOutputEditor.setValue(sql);
         } catch (err) {
             sqlOutputEditor.setValue(`-- Error generating SQL:\n-- ${err.message}`);
         }
     });
 
-    function generateSQL(data, tableName, hasHeader) {
+    function generateSQL(data, tableName, hasHeader, sanitizeHeaders = false) {
         if (data.length === 0) return "-- Empty data";
 
         let headers = [];
         let rows = data;
 
         if (hasHeader) {
-            headers = data[0].map(h => h ? h.toString().trim().replace(/\s+/g, '_') : 'Column_x');
+            headers = data[0].map((h, i) => {
+                if (!h) return `Column_${i + 1}`;
+                const raw = h.toString().trim();
+                return sanitizeHeaders ? SqlSchemaInferrer.sanitizeHeader(raw) : raw.replace(/\s+/g, '_');
+            });
             rows = data.slice(1);
         } else {
             // Generate Col1, Col2...
@@ -860,6 +894,18 @@ require(['vs/editor/editor.main'], function () {
                 headers.push(`Col${i + 1}`);
             }
         }
+
+        // Deduplicate headers if necessary
+        const usedHeaders = new Set();
+        headers = headers.map((h) => {
+            let name = h;
+            let counter = 1;
+            while (usedHeaders.has(name.toLowerCase())) {
+                name = `${h}_${counter++}`;
+            }
+            usedHeaders.add(name.toLowerCase());
+            return name;
+        });
 
         if (rows.length === 0) return `-- No data rows found in ${tableName}`;
 
@@ -1022,25 +1068,30 @@ require(['vs/editor/editor.main'], function () {
 
         const tableName = document.getElementById('json-table-name').value || "#TempTable";
         const hasHeader = document.getElementById('json-header-row').checked;
+        const sanitizeHeaders = document.getElementById('json-sanitize-headers') ? document.getElementById('json-sanitize-headers').checked : false;
         const outputMode = document.getElementById('json-output-mode').value;
         const prettify = document.getElementById('json-prettify').checked;
 
         try {
-            const script = generateJsonScript(jsonLoadedData, tableName, hasHeader, outputMode, prettify);
+            const script = generateJsonScript(jsonLoadedData, tableName, hasHeader, outputMode, prettify, sanitizeHeaders);
             jsonOutputEditor.setValue(script);
         } catch (err) {
             jsonOutputEditor.setValue(`-- Error generating script:\n-- ${err.message}`);
         }
     });
 
-    function generateJsonScript(data, tableName, hasHeader, outputMode, prettify) {
+    function generateJsonScript(data, tableName, hasHeader, outputMode, prettify, sanitizeHeaders = false) {
         if (data.length === 0) return "-- Empty data";
 
         let headers = [];
         let rows = data;
 
         if (hasHeader) {
-            headers = data[0].map(h => h ? h.toString().trim().replace(/\s+/g, '_') : 'Column_x');
+            headers = data[0].map((h, i) => {
+                if (!h) return `Column_${i + 1}`;
+                const raw = h.toString().trim();
+                return sanitizeHeaders ? SqlSchemaInferrer.sanitizeHeader(raw) : raw.replace(/\s+/g, '_');
+            });
             rows = data.slice(1);
         } else {
             const colCount = data[0].length;
@@ -1048,6 +1099,18 @@ require(['vs/editor/editor.main'], function () {
                 headers.push(`Col${i + 1}`);
             }
         }
+
+        // Deduplicate headers if necessary
+        const usedHeaders = new Set();
+        headers = headers.map((h) => {
+            let name = h;
+            let counter = 1;
+            while (usedHeaders.has(name.toLowerCase())) {
+                name = `${h}_${counter++}`;
+            }
+            usedHeaders.add(name.toLowerCase());
+            return name;
+        });
 
         if (rows.length === 0) return `-- No data rows found`;
 
@@ -1100,7 +1163,7 @@ require(['vs/editor/editor.main'], function () {
         script += `INSERT INTO ${tableName} (\n    ${headers.map(h => `[${h}]`).join(', ')}\n)\n`;
         script += `SELECT \n    ${headers.map(h => `[${h}]`).join(',\n    ')}\n`;
         script += `FROM OPENJSON(@json)\nWITH (\n`;
-        script += colTypes.map(c => `    [${c.header}] ${c.type} '$.${c.header}'`).join(',\n');
+        script += colTypes.map(c => `    [${c.header}] ${c.type} ${SqlSchemaInferrer.formatJsonPath(c.header)}`).join(',\n');
         script += `\n);\n\n`;
         script += `-- Verify inserted data:\n`;
         script += `SELECT * FROM ${tableName};\n`;

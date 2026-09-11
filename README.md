@@ -21,10 +21,13 @@ Built with **HTML5**, **Vanilla CSS3**, **JavaScript (ES6)**, **Monaco Editor**,
 ### 📊 3. Sheet to SQL Generator
 - **Bulk Insert Script Generator**: Upload Excel (`.xlsx`, `.xls`) or `.csv` files.
 - **Robust Data Validation & T-SQL Schema Inference**: Rigorously validates all cell values before determining SQL data types (`BIT`, `INT`, `BIGINT`, `DECIMAL(p,s)`, `DATETIME`, `DATE`, `UNIQUEIDENTIFIER`, and `NVARCHAR(n)`). Numbers and year identifiers are strictly validated to prevent false positives as datetimes.
+- **Sanitize Headers Option**: Optional toggle to sanitize column headers by replacing dots (`.`), spaces, and special characters with underscores (`_`), avoiding SQL multi-part identifier conflicts.
 - **Batched Inserts**: Produces `CREATE TABLE` and `INSERT INTO ... VALUES` statements batched every 1,000 rows with safe type-based SQL escaping.
 
 ### 📄 4. Sheet to JSON & SSMS OPENJSON Script Generator
 - **SSMS T-SQL OPENJSON Generator**: Upload spreadsheets and generate SQL Server scripts utilizing `DECLARE @json NVARCHAR(MAX)` and `INSERT INTO #TempTable (...) SELECT ... FROM OPENJSON(@json) WITH (...)` using validated column schemas.
+- **Special Character & Dot (`.`) Safe Pathing**: Automatically detects property names with dots (`.`) or special characters and encloses them in double quotes within the JSON path (e.g. `[User.Name] NVARCHAR(50) '$."User.Name"'`), preventing SQL Server OPENJSON from mistaking dots for nested child object navigators.
+- **Sanitize Headers Option**: Toggle to clean headers into standard SQL identifiers (e.g. `User.Name` $\rightarrow$ `User_Name`) in both the JSON payload and the SQL schema.
 - **Prettify Toggle**: Option to format JSON payloads as indented structures or compact strings.
 - **Multi-Output Modes**: Export as **SSMS OPENJSON Script**, **Raw JSON Array**, or **Mongo insertMany**.
 
