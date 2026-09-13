@@ -1030,11 +1030,21 @@ require(['vs/editor/editor.main'], function () {
             toggleBtn.addEventListener('click', () => {
                 section.classList.toggle('preview-collapsed');
                 const isCollapsed = section.classList.contains('preview-collapsed');
+                section.dataset.userExpanded = isCollapsed ? '' : 'true';
                 toggleBtn.innerText = isCollapsed ? 'Expand ▼' : 'Collapse ▲';
                 setTimeout(() => {
                     if (editor) editor.layout();
                 }, 50);
             });
+        }
+
+        // Default to collapsed unless explicitly expanded by the user
+        if (section.dataset.userExpanded !== 'true') {
+            section.classList.add('preview-collapsed');
+            if (toggleBtn) toggleBtn.innerText = 'Expand ▼';
+        } else {
+            section.classList.remove('preview-collapsed');
+            if (toggleBtn) toggleBtn.innerText = 'Collapse ▲';
         }
 
         section.style.display = 'flex';
@@ -1047,6 +1057,8 @@ require(['vs/editor/editor.main'], function () {
         // Visual feedback
         const dropText = dropZone.querySelector('.drop-text p');
         dropText.innerText = `Loaded: ${file.name}`;
+        const sqlSec = document.getElementById('sql-preview-section');
+        if (sqlSec) sqlSec.dataset.userExpanded = '';
 
         const reader = new FileReader();
         reader.onload = (e) => {
@@ -1251,6 +1263,8 @@ require(['vs/editor/editor.main'], function () {
     function handleJsonFile(file) {
         const dropText = jsonDropZone.querySelector('.drop-text p');
         dropText.innerText = `Loaded: ${file.name}`;
+        const jsonSec = document.getElementById('json-preview-section');
+        if (jsonSec) jsonSec.dataset.userExpanded = '';
 
         const reader = new FileReader();
         reader.onload = (e) => {
