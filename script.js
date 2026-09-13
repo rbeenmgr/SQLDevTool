@@ -808,6 +808,241 @@ require(['vs/editor/editor.main'], function () {
     };
     window.SqlSchemaInferrer = SqlSchemaInferrer;
 
+    // --- Data Preview & Column Selection State ---
+    let selectedColumnsSql = new Set();
+    let selectedColumnsJson = new Set();
+
+    function getTypePillClass(type) {
+        const t = (type || '').toUpperCase();
+        if (t.startsWith('INT') || t.startsWith('BIGINT')) return 'type-int';
+        if (t.startsWith('DECIMAL')) return 'type-decimal';
+        if (t.startsWith('DATE') || t.startsWith('DATETIME')) return 'type-date';
+        if (t.startsWith('NVARCHAR') || t.startsWith('VARCHAR')) return 'type-text';
+        return 'type-other';
+    }
+
+    function extractHeaders(data, hasHeader, sanitizeHeaders) {
+        if (!data || data.length === 0) return [];
+        let headers = [];
+        if (hasHeader) {
+            headers = data[0].map((h, i) => {
+                if (!h) return `Column_${i + 1}`;
+                const raw = h.toString().trim();
+                return sanitizeHeaders ? SqlSchemaInferrer.sanitizeHeader(raw) : raw.replace(/\s+/g, '_');
+            });
+        } else {
+            const colCount = data[0].length;
+            for (let i = 0; i < colCount; i++) {
+                headers.push(`Col${i + 1}`);
+            }
+        }
+        const usedHeaders = new Set();
+        return headers.map((h) => {
+            let name = h;
+            let counter = 1;
+            while (usedHeaders.has(name.toLowerCase())) {
+                name = `${h}_${counter++}`;
+            }
+            usedHeaders.add(name.toLowerCase());
+            return name;
+        });
+    }
+
+    function escapeHtml(str) {
+        if (str === null || str === undefined) return '';
+        return String(str)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;');
+    }
+
+    function renderDataPreview(viewType, data) {
+        const isSql = viewType === 'sql';
+        const section = document.getElementById(`${viewType}-preview-section`);
+        const chipsContainer = document.getElementById(`${viewType}-columns-chips`);
+        const table = document.getElementById(`${viewType}-preview-table`);
+        const badge = document.getElementById(`${viewType}-column-count-badge`);
+        const editor = isSql ? sqlOutputEditor : jsonOutputEditor;
+
+        if (!data || data.length === 0) {
+            if (section) section.style.display = 'none';
+            return;
+        }
+
+        const hasHeaderEl = document.getElementById(isSql ? 'header-row' : 'json-header-row');
+        const hasHeader = hasHeaderEl ? hasHeaderEl.checked : true;
+        const sanitizeCheckbox = document.getElementById(isSql ? 'sql-sanitize-headers' : 'json-sanitize-headers');
+        const sanitizeHeaders = sanitizeCheckbox ? sanitizeCheckbox.checked : false;
+
+        const headers = extractHeaders(data, hasHeader, sanitizeHeaders);
+        const rows = hasHeader ? data.slice(1) : data;
+        const colTypes = SqlSchemaInferrer.inferColumns(headers, rows);
+
+        let selectedSet = isSql ? selectedColumnsSql : selectedColumnsJson;
+        // Default to all columns selected on initial load or if column count changed
+        if (selectedSet.size === 0 || Math.max(...selectedSet) >= headers.length) {
+            selectedSet.clear();
+            for (let i = 0; i < headers.length; i++) {
+                selectedSet.add(i);
+            }
+        }
+
+        const updateSelectionUI = () => {
+            if (badge) {
+                badge.innerText = `${selectedSet.size} of ${headers.length} selected`;
+            }
+
+            chipsContainer.querySelectorAll('.column-chip').forEach(chip => {
+                const idx = parseInt(chip.getAttribute('data-col'), 10);
+                const isSelected = selectedSet.has(idx);
+                const cb = chip.querySelector('input[type="checkbox"]');
+                if (cb) cb.checked = isSelected;
+                chip.classList.toggle('active', isSelected);
+                chip.classList.toggle('inactive', !isSelected);
+            });
+
+            table.querySelectorAll('[data-col]').forEach(el => {
+                const idx = parseInt(el.getAttribute('data-col'), 10);
+                const isSelected = selectedSet.has(idx);
+                el.classList.toggle('col-unselected', !isSelected);
+                const cb = el.querySelector('input[type="checkbox"]');
+                if (cb) cb.checked = isSelected;
+            });
+        };
+
+        // Render Chips
+        chipsContainer.innerHTML = '';
+        headers.forEach((h, i) => {
+            const colInfo = colTypes[i];
+            const isSelected = selectedSet.has(i);
+            const chip = document.createElement('div');
+            chip.className = `column-chip ${isSelected ? 'active' : 'inactive'}`;
+            chip.setAttribute('data-col', i);
+            chip.innerHTML = `
+                <input type="checkbox" ${isSelected ? 'checked' : ''}>
+                <span>${escapeHtml(h)}</span>
+                <span class="type-pill ${getTypePillClass(colInfo ? colInfo.type : '')}">${colInfo ? colInfo.type : 'NVARCHAR'}</span>
+            `;
+
+            chip.addEventListener('click', (e) => {
+                if (e.target.tagName !== 'INPUT') {
+                    const cb = chip.querySelector('input[type="checkbox"]');
+                    if (cb) cb.checked = !cb.checked;
+                }
+                const isChecked = chip.querySelector('input[type="checkbox"]').checked;
+                if (isChecked) {
+                    selectedSet.add(i);
+                } else {
+                    selectedSet.delete(i);
+                }
+                updateSelectionUI();
+            });
+
+            chipsContainer.appendChild(chip);
+        });
+
+        // Render Table
+        table.innerHTML = '';
+        const thead = document.createElement('thead');
+        let thHtml = '<tr><th class="row-num-header">#</th>';
+        headers.forEach((h, i) => {
+            const colInfo = colTypes[i];
+            const isSelected = selectedSet.has(i);
+            thHtml += `
+                <th class="${isSelected ? '' : 'col-unselected'}" data-col="${i}">
+                    <div class="th-content">
+                        <input type="checkbox" ${isSelected ? 'checked' : ''}>
+                        <span>${escapeHtml(h)}</span>
+                        <span class="type-pill ${getTypePillClass(colInfo ? colInfo.type : '')}">${colInfo ? colInfo.type : 'NVARCHAR'}</span>
+                    </div>
+                </th>
+            `;
+        });
+        thHtml += '</tr>';
+        thead.innerHTML = thHtml;
+
+        thead.querySelectorAll('th[data-col]').forEach(th => {
+            const cb = th.querySelector('input[type="checkbox"]');
+            if (cb) {
+                cb.addEventListener('change', () => {
+                    const colIdx = parseInt(th.getAttribute('data-col'), 10);
+                    if (cb.checked) {
+                        selectedSet.add(colIdx);
+                    } else {
+                        selectedSet.delete(colIdx);
+                    }
+                    updateSelectionUI();
+                });
+            }
+        });
+
+        table.appendChild(thead);
+
+        const tbody = document.createElement('tbody');
+        const previewRows = rows.slice(0, 7);
+        previewRows.forEach((row, rIdx) => {
+            const tr = document.createElement('tr');
+            let trHtml = `<td class="row-num-cell">${rIdx + 1}</td>`;
+            headers.forEach((_, cIdx) => {
+                const isSelected = selectedSet.has(cIdx);
+                const rawVal = row ? row[cIdx] : '';
+                let displayVal = rawVal;
+                if (rawVal instanceof Date) {
+                    displayVal = rawVal.toISOString().slice(0, 19).replace('T', ' ');
+                } else if (rawVal === null || rawVal === undefined) {
+                    displayVal = 'NULL';
+                }
+                trHtml += `<td class="${isSelected ? '' : 'col-unselected'}" data-col="${cIdx}" title="${escapeHtml(displayVal)}">${escapeHtml(displayVal)}</td>`;
+            });
+            tr.innerHTML = trHtml;
+            tbody.appendChild(tr);
+        });
+        table.appendChild(tbody);
+
+        updateSelectionUI();
+
+        // Wire toolbar buttons
+        const selectAllBtn = document.getElementById(`${viewType}-select-all-btn`);
+        const deselectAllBtn = document.getElementById(`${viewType}-deselect-all-btn`);
+        const toggleBtn = document.getElementById(`${viewType}-toggle-preview-btn`);
+
+        if (selectAllBtn && !selectAllBtn.dataset.wired) {
+            selectAllBtn.dataset.wired = 'true';
+            selectAllBtn.addEventListener('click', () => {
+                const sSet = isSql ? selectedColumnsSql : selectedColumnsJson;
+                for (let i = 0; i < headers.length; i++) sSet.add(i);
+                updateSelectionUI();
+            });
+        }
+
+        if (deselectAllBtn && !deselectAllBtn.dataset.wired) {
+            deselectAllBtn.dataset.wired = 'true';
+            deselectAllBtn.addEventListener('click', () => {
+                const sSet = isSql ? selectedColumnsSql : selectedColumnsJson;
+                sSet.clear();
+                updateSelectionUI();
+            });
+        }
+
+        if (toggleBtn && !toggleBtn.dataset.wired) {
+            toggleBtn.dataset.wired = 'true';
+            toggleBtn.addEventListener('click', () => {
+                section.classList.toggle('preview-collapsed');
+                const isCollapsed = section.classList.contains('preview-collapsed');
+                toggleBtn.innerText = isCollapsed ? 'Expand ▼' : 'Collapse ▲';
+                setTimeout(() => {
+                    if (editor) editor.layout();
+                }, 50);
+            });
+        }
+
+        section.style.display = 'flex';
+        setTimeout(() => {
+            if (editor) editor.layout();
+        }, 50);
+    }
+
     function handleFile(file) {
         // Visual feedback
         const dropText = dropZone.querySelector('.drop-text p');
@@ -836,9 +1071,7 @@ require(['vs/editor/editor.main'], function () {
             // Load first sheet by default
             loadSheetData(workbook.SheetNames[0]);
 
-            // Auto-generate on upload? Or wait for button?
-            // Let's output a success message or preview.
-            sqlOutputEditor.setValue(`-- File loaded: ${file.name}\n-- Sheets: ${workbook.SheetNames.join(', ')}\n-- Rows: ${loadedData.length}\n-- Click 'Generate SQL' to create script.`);
+            sqlOutputEditor.setValue(`-- File loaded: ${file.name}\n-- Sheets: ${workbook.SheetNames.join(', ')}\n-- Rows: ${loadedData.length}\n-- Select columns above and click 'Generate SQL' to create script.`);
         };
         reader.readAsArrayBuffer(file);
     }
@@ -846,7 +1079,7 @@ require(['vs/editor/editor.main'], function () {
     sheetSelector.addEventListener('change', (e) => {
         if (currentWorkbook) {
             loadSheetData(e.target.value);
-            sqlOutputEditor.setValue(`-- Switched to sheet: ${e.target.value}\n-- Rows: ${loadedData.length}\n-- Click 'Generate SQL' to create script.`);
+            sqlOutputEditor.setValue(`-- Switched to sheet: ${e.target.value}\n-- Rows: ${loadedData.length}\n-- Select columns above and click 'Generate SQL' to create script.`);
         }
     });
 
@@ -854,6 +1087,22 @@ require(['vs/editor/editor.main'], function () {
         if (!currentWorkbook) return;
         const worksheet = currentWorkbook.Sheets[sheetName];
         loadedData = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: null });
+        selectedColumnsSql.clear();
+        renderDataPreview('sql', loadedData);
+    }
+
+    // Re-render preview on option toggles
+    const headerRowCb = document.getElementById('header-row');
+    if (headerRowCb) {
+        headerRowCb.addEventListener('change', () => {
+            if (loadedData) renderDataPreview('sql', loadedData);
+        });
+    }
+    const sqlSanitizeCb = document.getElementById('sql-sanitize-headers');
+    if (sqlSanitizeCb) {
+        sqlSanitizeCb.addEventListener('change', () => {
+            if (loadedData) renderDataPreview('sql', loadedData);
+        });
     }
 
     generateBtn.addEventListener('click', () => {
@@ -877,37 +1126,18 @@ require(['vs/editor/editor.main'], function () {
     function generateSQL(data, tableName, hasHeader, sanitizeHeaders = false) {
         if (data.length === 0) return "-- Empty data";
 
-        let headers = [];
-        let rows = data;
+        let allHeaders = extractHeaders(data, hasHeader, sanitizeHeaders);
+        let allRows = hasHeader ? data.slice(1) : data;
 
-        if (hasHeader) {
-            headers = data[0].map((h, i) => {
-                if (!h) return `Column_${i + 1}`;
-                const raw = h.toString().trim();
-                return sanitizeHeaders ? SqlSchemaInferrer.sanitizeHeader(raw) : raw.replace(/\s+/g, '_');
-            });
-            rows = data.slice(1);
-        } else {
-            // Generate Col1, Col2...
-            const colCount = data[0].length;
-            for (let i = 0; i < colCount; i++) {
-                headers.push(`Col${i + 1}`);
-            }
+        if (allRows.length === 0) return `-- No data rows found in ${tableName}`;
+
+        if (selectedColumnsSql.size === 0) {
+            return `-- No columns selected. Please select at least one column from the preview above.`;
         }
 
-        // Deduplicate headers if necessary
-        const usedHeaders = new Set();
-        headers = headers.map((h) => {
-            let name = h;
-            let counter = 1;
-            while (usedHeaders.has(name.toLowerCase())) {
-                name = `${h}_${counter++}`;
-            }
-            usedHeaders.add(name.toLowerCase());
-            return name;
-        });
-
-        if (rows.length === 0) return `-- No data rows found in ${tableName}`;
+        const selectedIndices = Array.from(selectedColumnsSql).sort((a, b) => a - b).filter(i => i < allHeaders.length);
+        const headers = selectedIndices.map(i => allHeaders[i]);
+        const rows = allRows.map(row => selectedIndices.map(i => (row ? row[i] : null)));
 
         // Validate data and infer SQL column schema using SqlSchemaInferrer
         const colTypes = SqlSchemaInferrer.inferColumns(headers, rows);
@@ -916,7 +1146,7 @@ require(['vs/editor/editor.main'], function () {
         let script = `-- =============================================\n`;
         script += `-- Table: ${tableName}\n`;
         script += `-- Total Rows: ${rows.length}\n`;
-        script += `-- Validated Schema:\n`;
+        script += `-- Validated Schema (${headers.length} selected columns):\n`;
         colTypes.forEach(c => {
             script += `--   [${c.header}] -> ${c.type} (${c.nonNullCount} non-null values)\n`;
         });
@@ -1042,7 +1272,7 @@ require(['vs/editor/editor.main'], function () {
             }
 
             loadJsonSheetData(workbook.SheetNames[0]);
-            jsonOutputEditor.setValue(`-- File loaded: ${file.name}\n-- Sheets: ${workbook.SheetNames.join(', ')}\n-- Rows: ${jsonLoadedData.length}\n-- Click 'Generate' to create JSON/SSMS script.`);
+            jsonOutputEditor.setValue(`-- File loaded: ${file.name}\n-- Sheets: ${workbook.SheetNames.join(', ')}\n-- Rows: ${jsonLoadedData.length}\n-- Select columns above and click 'Generate' to create JSON/SSMS script.`);
         };
         reader.readAsArrayBuffer(file);
     }
@@ -1050,7 +1280,7 @@ require(['vs/editor/editor.main'], function () {
     jsonSheetSelector.addEventListener('change', (e) => {
         if (jsonCurrentWorkbook) {
             loadJsonSheetData(e.target.value);
-            jsonOutputEditor.setValue(`-- Switched to sheet: ${e.target.value}\n-- Rows: ${jsonLoadedData.length}\n-- Click 'Generate' to create JSON/SSMS script.`);
+            jsonOutputEditor.setValue(`-- Switched to sheet: ${e.target.value}\n-- Rows: ${jsonLoadedData.length}\n-- Select columns above and click 'Generate' to create JSON/SSMS script.`);
         }
     });
 
@@ -1058,6 +1288,22 @@ require(['vs/editor/editor.main'], function () {
         if (!jsonCurrentWorkbook) return;
         const worksheet = jsonCurrentWorkbook.Sheets[sheetName];
         jsonLoadedData = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: null });
+        selectedColumnsJson.clear();
+        renderDataPreview('json', jsonLoadedData);
+    }
+
+    // Re-render JSON preview on option toggles
+    const jsonHeaderRowCb = document.getElementById('json-header-row');
+    if (jsonHeaderRowCb) {
+        jsonHeaderRowCb.addEventListener('change', () => {
+            if (jsonLoadedData) renderDataPreview('json', jsonLoadedData);
+        });
+    }
+    const jsonSanitizeCb = document.getElementById('json-sanitize-headers');
+    if (jsonSanitizeCb) {
+        jsonSanitizeCb.addEventListener('change', () => {
+            if (jsonLoadedData) renderDataPreview('json', jsonLoadedData);
+        });
     }
 
     jsonGenerateBtn.addEventListener('click', () => {
@@ -1083,38 +1329,20 @@ require(['vs/editor/editor.main'], function () {
     function generateJsonScript(data, tableName, hasHeader, outputMode, prettify, sanitizeHeaders = false) {
         if (data.length === 0) return "-- Empty data";
 
-        let headers = [];
-        let rows = data;
+        let allHeaders = extractHeaders(data, hasHeader, sanitizeHeaders);
+        let allRows = hasHeader ? data.slice(1) : data;
 
-        if (hasHeader) {
-            headers = data[0].map((h, i) => {
-                if (!h) return `Column_${i + 1}`;
-                const raw = h.toString().trim();
-                return sanitizeHeaders ? SqlSchemaInferrer.sanitizeHeader(raw) : raw.replace(/\s+/g, '_');
-            });
-            rows = data.slice(1);
-        } else {
-            const colCount = data[0].length;
-            for (let i = 0; i < colCount; i++) {
-                headers.push(`Col${i + 1}`);
-            }
+        if (allRows.length === 0) return `-- No data rows found`;
+
+        if (selectedColumnsJson.size === 0) {
+            return `-- No columns selected. Please select at least one column from the preview above.`;
         }
 
-        // Deduplicate headers if necessary
-        const usedHeaders = new Set();
-        headers = headers.map((h) => {
-            let name = h;
-            let counter = 1;
-            while (usedHeaders.has(name.toLowerCase())) {
-                name = `${h}_${counter++}`;
-            }
-            usedHeaders.add(name.toLowerCase());
-            return name;
-        });
+        const selectedIndices = Array.from(selectedColumnsJson).sort((a, b) => a - b).filter(i => i < allHeaders.length);
+        const headers = selectedIndices.map(i => allHeaders[i]);
+        const rows = allRows.map(row => selectedIndices.map(i => (row ? row[i] : null)));
 
-        if (rows.length === 0) return `-- No data rows found`;
-
-        // Transform rows to JSON objects array
+        // Transform rows to JSON objects array using selected columns
         const objects = rows.map(row => {
             let obj = {};
             headers.forEach((h, colIndex) => {
@@ -1149,7 +1377,7 @@ require(['vs/editor/editor.main'], function () {
         let script = `-- =============================================\n`;
         script += `-- SSMS OPENJSON Insert Script for ${tableName}\n`;
         script += `-- Total Rows: ${rows.length}\n`;
-        script += `-- Validated Schema:\n`;
+        script += `-- Validated Schema (${headers.length} selected columns):\n`;
         colTypes.forEach(c => {
             script += `--   [${c.header}] -> ${c.type}\n`;
         });

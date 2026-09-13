@@ -201,10 +201,29 @@
                         <button id="generate-sql-btn" class="control-item primary-btn">Generate SQL</button>
                     </div>
                 </div>
+
+                <div id="sql-preview-section" class="preview-section" style="display: none;">
+                    <div class="preview-toolbar">
+                        <div class="preview-title">
+                            <span>📊 Data Preview &amp; Column Selection</span>
+                            <span id="sql-column-count-badge" class="preview-badge">0 selected</span>
+                        </div>
+                        <div class="preview-actions">
+                            <button id="sql-select-all-btn" class="mini-btn" type="button">Select All</button>
+                            <button id="sql-deselect-all-btn" class="mini-btn" type="button">Deselect All</button>
+                            <button id="sql-toggle-preview-btn" class="mini-btn" type="button">Collapse ▲</button>
+                        </div>
+                    </div>
+                    <div id="sql-columns-chips" class="columns-chips-container"></div>
+                    <div id="sql-table-wrapper" class="preview-table-wrapper">
+                        <table id="sql-preview-table" class="preview-table"></table>
+                    </div>
+                </div>
+
                 <div class="editor-header">
                     <div class="pane-title">Generated SQL Script</div>
                 </div>
-                <div id="sql-output" class="monaco-editor-container" style="height: calc(100% - 150px);"></div>
+                <div id="sql-output" class="monaco-editor-container" style="min-height: 350px; flex: 1;"></div>
             </main>
         </section>
 
@@ -261,10 +280,29 @@
                         <button id="generate-json-script-btn" class="control-item primary-btn">Generate</button>
                     </div>
                 </div>
+
+                <div id="json-preview-section" class="preview-section" style="display: none;">
+                    <div class="preview-toolbar">
+                        <div class="preview-title">
+                            <span>📊 Data Preview &amp; Column Selection</span>
+                            <span id="json-column-count-badge" class="preview-badge">0 selected</span>
+                        </div>
+                        <div class="preview-actions">
+                            <button id="json-select-all-btn" class="mini-btn" type="button">Select All</button>
+                            <button id="json-deselect-all-btn" class="mini-btn" type="button">Deselect All</button>
+                            <button id="json-toggle-preview-btn" class="mini-btn" type="button">Collapse ▲</button>
+                        </div>
+                    </div>
+                    <div id="json-columns-chips" class="columns-chips-container"></div>
+                    <div id="json-table-wrapper" class="preview-table-wrapper">
+                        <table id="json-preview-table" class="preview-table"></table>
+                    </div>
+                </div>
+
                 <div class="editor-header">
                     <div class="pane-title">Generated JSON / SSMS Script</div>
                 </div>
-                <div id="json-output" class="monaco-editor-container" style="height: calc(100% - 150px);"></div>
+                <div id="json-output" class="monaco-editor-container" style="min-height: 350px; flex: 1;"></div>
             </main>
         </section>
 
