@@ -541,7 +541,7 @@ require(['vs/editor/editor.main'], function () {
                 return { type: 'BIT', val: val === true || String(val).toLowerCase() === 'true' };
             }
 
-            // 2. Pure number checks
+            // 2. Pure JavaScript number checks
             if (typeof val === 'number') {
                 if (Number.isInteger(val)) {
                     if (val >= -2147483648 && val <= 2147483647) {
@@ -568,7 +568,12 @@ require(['vs/editor/editor.main'], function () {
 
             const strVal = String(val).trim();
 
-            // 4. String of pure integer digits -> MUST be INT or BIGINT, NEVER DATETIME
+            // 4. Preserve strings with leading zeros (e.g., "00123", "0987") as STRING to prevent data loss
+            if (/^0\d+$/.test(strVal)) {
+                return { type: 'STRING', length: strVal.length, val: strVal };
+            }
+
+            // 5. String of pure integer digits -> MUST be INT or BIGINT, NEVER DATETIME
             if (/^[+-]?\d+$/.test(strVal)) {
                 const num = Number(strVal);
                 if (num >= -2147483648 && num <= 2147483647 && strVal.length <= 10) {
@@ -578,7 +583,7 @@ require(['vs/editor/editor.main'], function () {
                 }
             }
 
-            // 5. String of decimal number -> DECIMAL, NEVER DATETIME
+            // 6. String of decimal number -> DECIMAL, NEVER DATETIME
             if (/^[+-]?\d+\.\d+$/.test(strVal)) {
                 const parts = strVal.replace(/^[+-]/, '').split('.');
                 const precision = parts[0].length + parts[1].length;
@@ -586,8 +591,7 @@ require(['vs/editor/editor.main'], function () {
                 return { type: 'DECIMAL', precision, scale, val: Number(strVal) };
             }
 
-            // 6. Strict Date String check
-            // Strict regex match ensures pure numeric strings are never parsed as dates
+            // 7. Strict Date String check
             const matchesDatePattern = this.DATE_PATTERNS.some(pat => pat.test(strVal));
             if (matchesDatePattern) {
                 const parsedMs = Date.parse(strVal);
@@ -602,23 +606,23 @@ require(['vs/editor/editor.main'], function () {
                 }
             }
 
-            // 7. GUID / UUID
+            // 8. GUID / UUID
             if (this.GUID_PATTERN.test(strVal)) {
                 return { type: 'GUID', val: strVal };
             }
 
-            // 8. Fallback to String / NVARCHAR
+            // 9. Fallback to String / NVARCHAR
             return { type: 'STRING', length: strVal.length, val: strVal };
         },
 
-        // Infer column types across rows
-        inferColumns(headers, rows, scanLimit = 5000) {
-            const limit = Math.min(rows.length, scanLimit);
+        // Infer column types across all rows in the dataset
+        inferColumns(headers, rows, scanLimit = null) {
+            const limit = scanLimit ? Math.min(rows.length, scanLimit) : rows.length;
 
             return headers.map((header, c) => {
                 let hasNull = false;
                 let maxLen = 0;
-                let maxPrecision = 18;
+                let maxPrecision = 0;
                 let maxScale = 0;
                 let anyTime = false;
 
