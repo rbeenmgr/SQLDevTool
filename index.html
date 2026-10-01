@@ -89,21 +89,68 @@
                     <h1>DiffChecker</h1>
                 </div>
                 <div class="controls">
-                    <button id="transfer-to-modified" class="control-item icon-btn" title="Copy to Modified ->">
-                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                            stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <!-- Navigation & Diff Counter -->
+                    <button id="diff-prev-btn" class="control-item icon-btn" title="Previous Difference (Shift+F7)">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <polyline points="18 15 12 9 6 15"></polyline>
+                        </svg>
+                    </button>
+                    <button id="diff-next-btn" class="control-item icon-btn" title="Next Difference (F7)">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <polyline points="6 9 12 15 18 9"></polyline>
+                        </svg>
+                    </button>
+                    <span id="diff-count-badge" class="diff-badge no-diff">0 diffs</span>
+
+                    <div style="width: 1px; height: 20px; background-color: var(--border-color); margin: 0 4px;"></div>
+
+                    <!-- Transfer All & Utility Buttons -->
+                    <button id="transfer-to-modified" class="control-item icon-btn" title="Copy All to Modified ->">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                             <path d="M5 12h14"></path>
                             <path d="M12 5l7 7-7 7"></path>
                         </svg>
                     </button>
-                    <button id="transfer-to-original" class="control-item icon-btn" title="<- Copy to Original">
-                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                            stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <button id="transfer-to-original" class="control-item icon-btn" title="<- Copy All to Original">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                             <path d="M19 12H5"></path>
                             <path d="M12 19l-7-7 7-7"></path>
                         </svg>
                     </button>
+                    <button id="diff-swap-btn" class="control-item icon-btn" title="Swap Original & Modified Content">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <polyline points="16 3 21 3 21 8"></polyline>
+                            <line x1="4" y1="20" x2="21" y2="3"></line>
+                            <polyline points="8 21 3 21 3 16"></polyline>
+                            <line x1="15" y1="15" x2="3" y2="21"></line>
+                        </svg>
+                    </button>
+                    <button id="diff-clear-btn" class="control-item icon-btn" title="Clear Both Editors">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <polyline points="3 6 5 6 21 6"></polyline>
+                            <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                        </svg>
+                    </button>
+
                     <div style="width: 1px; height: 20px; background-color: var(--border-color); margin: 0 4px;"></div>
+
+                    <!-- View & Whitespace Toggles -->
+                    <button id="diff-toggle-inline" class="control-item icon-btn" title="Toggle Split / Unified View">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+                            <line x1="12" y1="3" x2="12" y2="21"></line>
+                        </svg>
+                    </button>
+                    <button id="diff-toggle-whitespace" class="control-item icon-btn" title="Toggle Ignore Whitespace">
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M4 12h16"></path>
+                            <path d="M4 6h16"></path>
+                            <path d="M4 18h16"></path>
+                        </svg>
+                    </button>
+
+                    <div style="width: 1px; height: 20px; background-color: var(--border-color); margin: 0 4px;"></div>
+
                     <select id="diff-language-selector" class="control-item">
                         <option value="javascript">JavaScript</option>
                         <option value="typescript">TypeScript</option>
@@ -124,8 +171,28 @@
 
             <main class="editor-container">
                 <div class="editor-header">
-                    <div class="pane-title">Original</div>
-                    <div class="pane-title">Modified</div>
+                    <div class="pane-title">
+                        <span id="original-pane-label">Original</span>
+                        <button id="upload-original-btn" class="pane-upload-btn" title="Upload Original File">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                                <polyline points="17 8 12 3 7 8"/>
+                                <line x1="12" y1="3" x2="12" y2="15"/>
+                            </svg>
+                        </button>
+                        <input type="file" id="original-file-input" hidden>
+                    </div>
+                    <div class="pane-title">
+                        <span id="modified-pane-label">Modified</span>
+                        <button id="upload-modified-btn" class="pane-upload-btn" title="Upload Modified File">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                                <polyline points="17 8 12 3 7 8"/>
+                                <line x1="12" y1="3" x2="12" y2="15"/>
+                            </svg>
+                        </button>
+                        <input type="file" id="modified-file-input" hidden>
+                    </div>
                 </div>
                 <div id="diff-editor" class="monaco-editor-container"></div>
             </main>

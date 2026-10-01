@@ -25,24 +25,43 @@ require(['vs/editor/editor.main'], function () {
 
     diffEditor.layout(); // Initial layout
 
-    // --- Granular Transfer Logic ---
+    // --- Granular Transfer & Navigation Logic ---
     let originalDecorations = [];
     let modifiedDecorations = [];
     let currentLineChanges = [];
+    let currentDiffIndex = -1;
 
-    // Helper: Update Decorations on Diff Change
-    const updateDiffDecorations = () => {
-        const changes = diffEditor.getLineChanges();
-        currentLineChanges = changes || [];
+    const diffCountBadge = document.getElementById('diff-count-badge');
+    const diffPrevBtn = document.getElementById('diff-prev-btn');
+    const diffNextBtn = document.getElementById('diff-next-btn');
 
-        if (!changes) return;
+    // Helper: Update Decorations & Counter Badge on Diff Change
+    const updateDiffState = () => {
+        const changes = diffEditor.getLineChanges() || [];
+        currentLineChanges = changes;
 
+        // Reset diff index if out of bounds
+        if (currentDiffIndex >= changes.length) {
+            currentDiffIndex = changes.length - 1;
+        }
+
+        // Update Diff Counter Badge
+        if (diffCountBadge) {
+            const count = changes.length;
+            if (count === 0) {
+                diffCountBadge.innerText = '0 diffs';
+                diffCountBadge.className = 'diff-badge no-diff';
+            } else {
+                diffCountBadge.innerText = `${count} diff${count > 1 ? 's' : ''}`;
+                diffCountBadge.className = 'diff-badge has-diff';
+            }
+        }
+
+        // Update Decorations
         const newOriginalDecorations = [];
         const newModifiedDecorations = [];
 
         changes.forEach(change => {
-            // Original Side Arrow
-            // Ensure valid range (start > 0)
             if (change.originalStartLineNumber > 0) {
                 newOriginalDecorations.push({
                     range: new monaco.Range(change.originalStartLineNumber, 1, change.originalStartLineNumber, 1),
@@ -51,16 +70,8 @@ require(['vs/editor/editor.main'], function () {
                         glyphMarginHoverMessage: { value: 'Copy Current Block to Modified' }
                     }
                 });
-            } else if (change.originalStartLineNumber === 0 && change.originalEndLineNumber === 0) {
-                // It's an insertion in Modified (Deletion in Original context is effectively empty range?)
-                // If original has no lines (start=0, end=0), we can't really put a decoration on line 0.
-                // We might put it on the line *after* or *before* depending on context, 
-                // but visually for "Copy to Modified", we can't copy *nothing* to *something* easily via a button on a non-existent line.
-                // However, usually we show it on the nearest line.
-                // For now, skip pure insertions where original range is empty (0-0).
             }
 
-            // Modified Side Arrow
             if (change.modifiedStartLineNumber > 0) {
                 newModifiedDecorations.push({
                     range: new monaco.Range(change.modifiedStartLineNumber, 1, change.modifiedStartLineNumber, 1),
@@ -76,12 +87,52 @@ require(['vs/editor/editor.main'], function () {
         modifiedDecorations = modifiedModel.deltaDecorations(modifiedDecorations, newModifiedDecorations);
     };
 
-    // Listen for Diff Updates
-    diffEditor.onDidUpdateDiff(() => {
-        updateDiffDecorations();
+    // Navigate between differences
+    const navigateDiff = (direction) => {
+        if (!currentLineChanges || currentLineChanges.length === 0) return;
+
+        if (direction === 'next') {
+            currentDiffIndex = (currentDiffIndex + 1) % currentLineChanges.length;
+        } else if (direction === 'prev') {
+            currentDiffIndex = (currentDiffIndex - 1 + currentLineChanges.length) % currentLineChanges.length;
+        }
+
+        const change = currentLineChanges[currentDiffIndex];
+        if (change) {
+            const modLine = change.modifiedStartLineNumber > 0 ? change.modifiedStartLineNumber : 1;
+            const origLine = change.originalStartLineNumber > 0 ? change.originalStartLineNumber : 1;
+
+            diffEditor.getModifiedEditor().revealLineInCenter(modLine);
+            diffEditor.getOriginalEditor().revealLineInCenter(origLine);
+        }
+    };
+
+    if (diffPrevBtn) diffPrevBtn.addEventListener('click', () => navigateDiff('prev'));
+    if (diffNextBtn) diffNextBtn.addEventListener('click', () => navigateDiff('next'));
+
+    // Global Keyboard Shortcuts (F7 / Shift+F7 / Alt+N / Alt+P)
+    window.addEventListener('keydown', (e) => {
+        const diffView = document.getElementById('view-diff');
+        if (diffView && diffView.classList.contains('active')) {
+            if (e.key === 'F7') {
+                e.preventDefault();
+                navigateDiff(e.shiftKey ? 'prev' : 'next');
+            } else if (e.altKey && e.key.toLowerCase() === 'n') {
+                e.preventDefault();
+                navigateDiff('next');
+            } else if (e.altKey && e.key.toLowerCase() === 'p') {
+                e.preventDefault();
+                navigateDiff('prev');
+            }
+        }
     });
 
-    // Handle Clicks in Glyph Margin (Original)
+    // Listen for Diff Updates
+    diffEditor.onDidUpdateDiff(() => {
+        updateDiffState();
+    });
+
+    // Handle Clicks in Glyph Margin (Original -> Modified)
     diffEditor.getOriginalEditor().onMouseDown((e) => {
         if (e.target.type === monaco.editor.MouseTargetType.GUTTER_GLYPH_MARGIN) {
             const lineNumber = e.target.position.lineNumber;
@@ -89,62 +140,36 @@ require(['vs/editor/editor.main'], function () {
                 lineNumber >= c.originalStartLineNumber && lineNumber <= c.originalEndLineNumber
             );
 
-            if (change) {
-                // Transfer Original -> Modified
-                const text = originalModel.getValueInRange(new monaco.Range(
-                    change.originalStartLineNumber, 1,
-                    change.originalEndLineNumber, originalModel.getLineMaxColumn(change.originalEndLineNumber)
-                ));
-
-                // If Modified range is 0 (Deletion in Modified), we insert.
-                // If Modified range has content (Modification), we replace.
-                // Monaco's applyEdits handles ranges. 
-                // Careful: if modifiedStartLineNumber is 0 (it often happens for inserts at top?), handle boundaries.
+            if (change && change.originalStartLineNumber > 0) {
+                // Get lines from Original
+                const origLines = originalModel.getLinesContent().slice(
+                    change.originalStartLineNumber - 1,
+                    change.originalEndLineNumber
+                );
+                const textToCopy = origLines.join('\n');
 
                 let targetRange;
-                if (change.modifiedStartLineNumber === 0) {
-                    // Insertion at start? Or handling empty range is tricky.
-                    // Usually implies start at 1 but length 0 logic? 
-                    // But Monaco changes uses 0 for "none".
-                    targetRange = new monaco.Range(1, 1, 1, 1); // Fallback
+                if (change.modifiedStartLineNumber > 0 && change.modifiedEndLineNumber >= change.modifiedStartLineNumber) {
+                    // Replace existing modified block
+                    targetRange = new monaco.Range(
+                        change.modifiedStartLineNumber, 1,
+                        change.modifiedEndLineNumber, modifiedModel.getLineMaxColumn(change.modifiedEndLineNumber)
+                    );
                 } else {
-                    // If it's pure insertion in Modified (original 0-0), we are here because we clicked Original? 
-                    // No, if original 0-0, we skipped decoration. So we are here only if Original has content.
-
-                    // If Modified is empty (deletion), modifiedStart > modifiedEnd (e.g. 5, 4).
-                    // We need to insert AT modifiedStart.
-                    if (change.modifiedEndLineNumber < change.modifiedStartLineNumber) {
-                        targetRange = new monaco.Range(change.modifiedStartLineNumber, 1, change.modifiedStartLineNumber, 1);
-                    } else {
-                        targetRange = new monaco.Range(
-                            change.modifiedStartLineNumber, 1,
-                            change.modifiedEndLineNumber, modifiedModel.getLineMaxColumn(change.modifiedEndLineNumber)
-                        );
-                    }
+                    // Insertion into modified
+                    const insertLine = Math.max(1, change.modifiedStartLineNumber);
+                    targetRange = new monaco.Range(insertLine, 1, insertLine, 1);
                 }
-
-                // For deletions in Modified, we need to insert *and* maybe add newline?
-                // Using `pushEditOperations` is better to support Undo.
-                // Actually, standard `setValue` or specific edit.
-                // Let's try simpler: Replace the range. 
-                // Note: If copying 3 lines to replace 0 lines, we simply insert those 3 lines.
-                // Issues: Newline handling. `getValueInRange` gets text. 
-                // If we insert, do we need to add a newline char? 
-
-                // Let's assume standard explicit replacement works best visually.
-
-                // Special case: Copying to a Deletion (Insert in Original, Delete in Modified).
-                // Target is a point. Re-inserting lines there.
 
                 modifiedModel.pushEditOperations([], [{
                     range: targetRange,
-                    text: text
+                    text: textToCopy
                 }], () => null);
             }
         }
     });
 
-    // Handle Clicks in Glyph Margin (Modified)
+    // Handle Clicks in Glyph Margin (Modified -> Original)
     diffEditor.getModifiedEditor().onMouseDown((e) => {
         if (e.target.type === monaco.editor.MouseTargetType.GUTTER_GLYPH_MARGIN) {
             const lineNumber = e.target.position.lineNumber;
@@ -152,28 +177,30 @@ require(['vs/editor/editor.main'], function () {
                 lineNumber >= c.modifiedStartLineNumber && lineNumber <= c.modifiedEndLineNumber
             );
 
-            if (change) {
-                // Transfer Modified -> Original
-                const text = modifiedModel.getValueInRange(new monaco.Range(
-                    change.modifiedStartLineNumber, 1,
-                    change.modifiedEndLineNumber, modifiedModel.getLineMaxColumn(change.modifiedEndLineNumber)
-                ));
+            if (change && change.modifiedStartLineNumber > 0) {
+                // Get lines from Modified
+                const modLines = modifiedModel.getLinesContent().slice(
+                    change.modifiedStartLineNumber - 1,
+                    change.modifiedEndLineNumber
+                );
+                const textToCopy = modLines.join('\n');
 
                 let targetRange;
-                if (change.originalEndLineNumber < change.originalStartLineNumber) {
-                    // Deletion in Original (Insert in Modified).
-                    // We inserting back to Original.
-                    targetRange = new monaco.Range(change.originalStartLineNumber, 1, change.originalStartLineNumber, 1);
-                } else {
+                if (change.originalStartLineNumber > 0 && change.originalEndLineNumber >= change.originalStartLineNumber) {
+                    // Replace existing original block
                     targetRange = new monaco.Range(
                         change.originalStartLineNumber, 1,
                         change.originalEndLineNumber, originalModel.getLineMaxColumn(change.originalEndLineNumber)
                     );
+                } else {
+                    // Insertion into original
+                    const insertLine = Math.max(1, change.originalStartLineNumber);
+                    targetRange = new monaco.Range(insertLine, 1, insertLine, 1);
                 }
 
                 originalModel.pushEditOperations([], [{
                     range: targetRange,
-                    text: text
+                    text: textToCopy
                 }], () => null);
             }
         }
@@ -280,6 +307,122 @@ require(['vs/editor/editor.main'], function () {
     document.getElementById('transfer-to-original').addEventListener('click', () => {
         originalModel.setValue(modifiedModel.getValue());
     });
+
+    // Swap Content Button
+    const diffSwapBtn = document.getElementById('diff-swap-btn');
+    if (diffSwapBtn) {
+        diffSwapBtn.addEventListener('click', () => {
+            const orig = originalModel.getValue();
+            const mod = modifiedModel.getValue();
+            originalModel.setValue(mod);
+            modifiedModel.setValue(orig);
+        });
+    }
+
+    // Clear Editors Button
+    const diffClearBtn = document.getElementById('diff-clear-btn');
+    if (diffClearBtn) {
+        diffClearBtn.addEventListener('click', () => {
+            originalModel.setValue("");
+            modifiedModel.setValue("");
+            const origLabel = document.getElementById('original-pane-label');
+            const modLabel = document.getElementById('modified-pane-label');
+            if (origLabel) origLabel.innerText = "Original";
+            if (modLabel) modLabel.innerText = "Modified";
+        });
+    }
+
+    // Split / Inline View Toggle
+    const diffToggleInlineBtn = document.getElementById('diff-toggle-inline');
+    let isSideBySide = true;
+    if (diffToggleInlineBtn) {
+        diffToggleInlineBtn.addEventListener('click', () => {
+            isSideBySide = !isSideBySide;
+            diffEditor.updateOptions({ renderSideBySide: isSideBySide });
+            diffToggleInlineBtn.classList.toggle('active', !isSideBySide);
+            diffToggleInlineBtn.title = isSideBySide ? "Toggle Split / Unified View" : "Unified View Active (Click for Split View)";
+        });
+    }
+
+    // Ignore Whitespace Toggle
+    const diffToggleWhitespaceBtn = document.getElementById('diff-toggle-whitespace');
+    let ignoreWhitespace = false;
+    if (diffToggleWhitespaceBtn) {
+        diffToggleWhitespaceBtn.addEventListener('click', () => {
+            ignoreWhitespace = !ignoreWhitespace;
+            diffEditor.updateOptions({ ignoreTrimWhitespace: ignoreWhitespace });
+            diffToggleWhitespaceBtn.classList.toggle('active', ignoreWhitespace);
+            diffToggleWhitespaceBtn.title = ignoreWhitespace ? "Ignoring Whitespace (Click to Show All Space Changes)" : "Toggle Ignore Whitespace";
+        });
+    }
+
+    // --- Diff View Pane File Upload Handlers ---
+    const uploadOriginalBtn = document.getElementById('upload-original-btn');
+    const originalFileInput = document.getElementById('original-file-input');
+    const originalPaneLabel = document.getElementById('original-pane-label');
+
+    const uploadModifiedBtn = document.getElementById('upload-modified-btn');
+    const modifiedFileInput = document.getElementById('modified-file-input');
+    const modifiedPaneLabel = document.getElementById('modified-pane-label');
+
+    const detectLanguageFromExtension = (filename) => {
+        const ext = filename.split('.').pop().toLowerCase();
+        const langMap = {
+            'js': 'javascript', 'jsx': 'javascript', 'mjs': 'javascript',
+            'ts': 'typescript', 'tsx': 'typescript',
+            'html': 'html', 'htm': 'html',
+            'css': 'css', 'scss': 'css', 'less': 'css',
+            'json': 'json',
+            'py': 'python',
+            'java': 'java',
+            'cpp': 'cpp', 'c': 'cpp', 'h': 'cpp', 'hpp': 'cpp',
+            'cs': 'csharp',
+            'sql': 'sql',
+            'xml': 'xml', 'svg': 'xml',
+            'md': 'markdown', 'markdown': 'markdown',
+            'txt': 'plaintext'
+        };
+        return langMap[ext] || null;
+    };
+
+    const loadFileIntoModel = (file, model, labelElement, defaultLabel) => {
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = (e) => {
+            const content = e.target.result;
+            model.setValue(content);
+            if (labelElement) {
+                labelElement.innerText = `${defaultLabel}: ${file.name}`;
+                labelElement.title = file.name;
+            }
+            // Auto-detect and set language if matching extension found
+            const detectedLang = detectLanguageFromExtension(file.name);
+            if (detectedLang) {
+                diffLangSelector.value = detectedLang;
+                monaco.editor.setModelLanguage(originalModel, detectedLang);
+                monaco.editor.setModelLanguage(modifiedModel, detectedLang);
+            }
+        };
+        reader.readAsText(file);
+    };
+
+    if (uploadOriginalBtn && originalFileInput) {
+        uploadOriginalBtn.addEventListener('click', () => originalFileInput.click());
+        originalFileInput.addEventListener('change', (e) => {
+            if (e.target.files.length) {
+                loadFileIntoModel(e.target.files[0], originalModel, originalPaneLabel, 'Original');
+            }
+        });
+    }
+
+    if (uploadModifiedBtn && modifiedFileInput) {
+        uploadModifiedBtn.addEventListener('click', () => modifiedFileInput.click());
+        modifiedFileInput.addEventListener('change', (e) => {
+            if (e.target.files.length) {
+                loadFileIntoModel(e.target.files[0], modifiedModel, modifiedPaneLabel, 'Modified');
+            }
+        });
+    }
 
 
     // --- Formatter View Controls ---
