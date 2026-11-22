@@ -1,31 +1,65 @@
 require.config({ paths: { 'vs': 'https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.44.0/min/vs' } });
 
 require(['vs/editor/editor.main'], function () {
-    // Initialize the Diff Editor
-    // --- Diff Editor (View 1) ---
+    // =========================================================================
+    // 0. TOAST NOTIFICATION & UI HELPERS
+    // =========================================================================
+    function showToast(message, type = 'info', duration = 2600) {
+        const container = document.getElementById('toast-container');
+        if (!container) return;
+        const toast = document.createElement('div');
+        toast.className = `toast ${type}`;
+        const icon = type === 'success' ? '✅' : type === 'error' ? '⚠️' : '✨';
+        toast.innerHTML = `<span>${icon}</span><span>${escapeHtml(message)}</span>`;
+        container.appendChild(toast);
+        setTimeout(() => {
+            toast.style.opacity = '0';
+            toast.style.transform = 'translateY(8px)';
+            toast.style.transition = 'all 0.2s ease';
+            setTimeout(() => toast.remove(), 220);
+        }, duration);
+    }
+
+    function escapeHtml(str) {
+        if (str === null || str === undefined) return '';
+        return String(str)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;');
+    }
+
+    // =========================================================================
+    // 1. DIFF EDITOR & ADVANCED INTERACTIVE MERGE ENGINE (View 1)
+    // =========================================================================
     const diffEditor = monaco.editor.createDiffEditor(document.getElementById('diff-editor'), {
         theme: 'vs-dark',
         originalEditable: true,
-        automaticLayout: false, // We will manually layout on view switch
+        automaticLayout: false,
         renderSideBySide: true,
         minimap: { enabled: false },
         scrollBeyondLastLine: false,
         fontSize: 14,
         fontFamily: "'JetBrains Mono', 'Courier New', monospace",
-        glyphMargin: true // Enable Glyph Margin for buttons
+        glyphMargin: true,
+        codeLens: true
     });
 
-    const originalModel = monaco.editor.createModel("", "javascript");
-    const modifiedModel = monaco.editor.createModel("", "javascript");
+    const originalModel = monaco.editor.createModel("", "sql");
+    const modifiedModel = monaco.editor.createModel("", "sql");
 
     diffEditor.setModel({
         original: originalModel,
         modified: modifiedModel
     });
 
-    diffEditor.layout(); // Initial layout
+    const origEditor = diffEditor.getOriginalEditor();
+    const modEditor = diffEditor.getModifiedEditor();
+    origEditor.updateOptions({ codeLens: true, glyphMargin: true });
+    modEditor.updateOptions({ codeLens: true, glyphMargin: true });
 
-    // --- Granular Transfer & Navigation Logic ---
+    diffEditor.layout();
+
     let originalDecorations = [];
     let modifiedDecorations = [];
     let currentLineChanges = [];
@@ -35,61 +69,383 @@ require(['vs/editor/editor.main'], function () {
     const diffPrevBtn = document.getElementById('diff-prev-btn');
     const diffNextBtn = document.getElementById('diff-next-btn');
 
-    // Helper: Update Decorations & Counter Badge on Diff Change
+    // Simple Emitter to refresh CodeLens whenever diff hunks update
+    const codeLensListeners = [];
+    const diffCodeLensEmitter = {
+        event(listener) {
+            codeLensListeners.push(listener);
+            return {
+                dispose() {
+                    const idx = codeLensListeners.indexOf(listener);
+                    if (idx >= 0) codeLensListeners.splice(idx, 1);
+                }
+            };
+        },
+        fire() {
+            codeLensListeners.forEach(fn => fn());
+        }
+    };
+
+    // Helper: Get lines array from a model given start..end (1-indexed, inclusive)
+    function getModelLines(model, startLine, endLine) {
+        if (endLine <= 0 || startLine <= 0 || endLine < startLine) return [];
+        return model.getLinesContent().slice(startLine - 1, endLine);
+    }
+
+    // Helper: Apply a range replacement, pure insertion, or pure deletion with Undo Stops
+    function applyModelPatch(targetModel, targetEditor, targetStartLine, targetEndLine, hasSourceLines, sourceText) {
+        const lineCount = targetModel.getLineCount();
+        let editOp = null;
+
+        if (targetEndLine > 0) {
+            // Target has existing lines [targetStartLine..targetEndLine]
+            if (hasSourceLines) {
+                // Replace existing target lines with sourceText
+                editOp = {
+                    range: new monaco.Range(
+                        targetStartLine, 1,
+                        targetEndLine, targetModel.getLineMaxColumn(targetEndLine)
+                    ),
+                    text: sourceText
+                };
+            } else {
+                // Pure Deletion of target lines [targetStartLine..targetEndLine]
+                if (targetEndLine < lineCount) {
+                    editOp = {
+                        range: new monaco.Range(targetStartLine, 1, targetEndLine + 1, 1),
+                        text: ''
+                    };
+                } else if (targetStartLine > 1) {
+                    editOp = {
+                        range: new monaco.Range(
+                            targetStartLine - 1, targetModel.getLineMaxColumn(targetStartLine - 1),
+                            targetEndLine, targetModel.getLineMaxColumn(targetEndLine)
+                        ),
+                        text: ''
+                    };
+                } else {
+                    editOp = {
+                        range: new monaco.Range(1, 1, targetEndLine, targetModel.getLineMaxColumn(targetEndLine)),
+                        text: ''
+                    };
+                }
+            }
+        } else {
+            // Target has NO lines in this hunk (targetEndLine === 0) -> Pure Insertion into Target
+            if (!hasSourceLines) return;
+            const isTargetEmpty = lineCount === 1 && targetModel.getLineContent(1) === '';
+            if (isTargetEmpty) {
+                editOp = {
+                    range: new monaco.Range(1, 1, 1, 1),
+                    text: sourceText
+                };
+            } else if (targetStartLine <= 0) {
+                // Insert at the very top before line 1
+                editOp = {
+                    range: new monaco.Range(1, 1, 1, 1),
+                    text: sourceText + '\n'
+                };
+            } else {
+                // Insert after targetStartLine
+                const safeAnchor = Math.min(targetStartLine, lineCount);
+                const maxCol = targetModel.getLineMaxColumn(safeAnchor);
+                editOp = {
+                    range: new monaco.Range(safeAnchor, maxCol, safeAnchor, maxCol),
+                    text: '\n' + sourceText
+                };
+            }
+        }
+
+        if (editOp) {
+            targetEditor.pushUndoStop();
+            targetModel.pushEditOperations([], [editOp], () => null);
+            targetEditor.pushUndoStop();
+        }
+    }
+
+    /**
+     * Core 3-Way Hunk Transfer & Merge Engine
+     * @param {number} hunkIndex Index into currentLineChanges
+     * @param {'push-right'|'pull-left'|'merge-to-right'|'merge-to-left'} action
+     */
+    function applyHunkAction(hunkIndex, action) {
+        if (!currentLineChanges || currentLineChanges.length === 0) {
+            showToast('No diff hunks available to merge', 'info');
+            return;
+        }
+        const idx = (hunkIndex >= 0 && hunkIndex < currentLineChanges.length)
+            ? hunkIndex
+            : (currentDiffIndex >= 0 ? currentDiffIndex : 0);
+
+        const change = currentLineChanges[idx];
+        if (!change) return;
+
+        const origHasLines = change.originalEndLineNumber > 0;
+        const modHasLines = change.modifiedEndLineNumber > 0;
+
+        const origLines = getModelLines(originalModel, change.originalStartLineNumber, change.originalEndLineNumber);
+        const modLines = getModelLines(modifiedModel, change.modifiedStartLineNumber, change.modifiedEndLineNumber);
+
+        const origText = origLines.join('\n');
+        const modText = modLines.join('\n');
+
+        if (action === 'push-right') {
+            // Move Left (Original) -> Right (Modified)
+            applyModelPatch(
+                modifiedModel,
+                modEditor,
+                change.modifiedStartLineNumber,
+                change.modifiedEndLineNumber,
+                origHasLines,
+                origText
+            );
+            showToast(`Pushed Hunk #${idx + 1} Left → Right`, 'success');
+        } else if (action === 'pull-left') {
+            // Move Right (Modified) -> Left (Original)
+            applyModelPatch(
+                originalModel,
+                origEditor,
+                change.originalStartLineNumber,
+                change.originalEndLineNumber,
+                modHasLines,
+                modText
+            );
+            showToast(`← Pulled Hunk #${idx + 1} Right → Left`, 'success');
+        } else if (action === 'merge-to-right') {
+            // Combine both Left & Right blocks in Right (Modified)
+            let combinedText = '';
+            if (origHasLines && modHasLines) combinedText = origText + '\n' + modText;
+            else if (origHasLines) combinedText = origText;
+            else if (modHasLines) combinedText = modText;
+
+            applyModelPatch(
+                modifiedModel,
+                modEditor,
+                change.modifiedStartLineNumber,
+                change.modifiedEndLineNumber,
+                origHasLines || modHasLines,
+                combinedText
+            );
+            showToast(`⇄ Merged Both into Right (Hunk #${idx + 1})`, 'success');
+        } else if (action === 'merge-to-left') {
+            // Combine both Left & Right blocks in Left (Original)
+            let combinedText = '';
+            if (origHasLines && modHasLines) combinedText = origText + '\n' + modText;
+            else if (origHasLines) combinedText = origText;
+            else if (modHasLines) combinedText = modText;
+
+            applyModelPatch(
+                originalModel,
+                origEditor,
+                change.originalStartLineNumber,
+                change.originalEndLineNumber,
+                origHasLines || modHasLines,
+                combinedText
+            );
+            showToast(`⇄ Merged Both into Left (Hunk #${idx + 1})`, 'success');
+        }
+    }
+
+    // Register Monaco Commands for Inline CodeLens Clicks
+    const cmdPushRightId = origEditor.addCommand(0, (_, hunkIdx) => applyHunkAction(hunkIdx, 'push-right'));
+    const cmdPullLeftId = modEditor.addCommand(0, (_, hunkIdx) => applyHunkAction(hunkIdx, 'pull-left'));
+    const cmdMergeRightId = origEditor.addCommand(0, (_, hunkIdx) => applyHunkAction(hunkIdx, 'merge-to-right'));
+    const cmdMergeLeftId = modEditor.addCommand(0, (_, hunkIdx) => applyHunkAction(hunkIdx, 'merge-to-left'));
+
+    // Placement Mode Toggle: 'inline' (default) | 'middle' | 'both'
+    let mergeUiMode = 'inline';
+    const mergeUiModeSelect = document.getElementById('diff-merge-ui-mode');
+    const hunkMergeToolbar = document.getElementById('hunk-merge-toolbar');
+    if (hunkMergeToolbar) {
+        hunkMergeToolbar.style.display = 'none';
+    }
+
+    if (mergeUiModeSelect) {
+        mergeUiModeSelect.addEventListener('change', (e) => {
+            mergeUiMode = e.target.value;
+            if (hunkMergeToolbar) {
+                hunkMergeToolbar.style.display = (mergeUiMode === 'inline') ? 'none' : 'flex';
+            }
+            const showCodeLens = (mergeUiMode === 'both' || mergeUiMode === 'inline');
+            origEditor.updateOptions({ codeLens: showCodeLens });
+            modEditor.updateOptions({ codeLens: showCodeLens });
+            diffCodeLensEmitter.fire();
+            showToast(
+                mergeUiMode === 'both' ? 'Showing Both Middle (< = >) and In-Code Merge Badges'
+                    : mergeUiMode === 'middle' ? 'Showing Middle (< = >) Merge Buttons Only'
+                        : 'Showing In-Code Merge Badges Only',
+                'info'
+            );
+        });
+    }
+
+    // Register Universal CodeLens Provider for Inline Merge Actions
+    monaco.languages.registerCodeLensProvider('*', {
+        onDidChange: diffCodeLensEmitter.event,
+        provideCodeLenses: function (model) {
+            if (mergeUiMode === 'middle') {
+                return { lenses: [], dispose: () => {} };
+            }
+            if (model !== originalModel && model !== modifiedModel) {
+                return { lenses: [], dispose: () => {} };
+            }
+            const isOrig = model === originalModel;
+            const lenses = [];
+
+            currentLineChanges.forEach((change, idx) => {
+                const origHasLines = change.originalEndLineNumber > 0;
+                const modHasLines = change.modifiedEndLineNumber > 0;
+                const hunkNum = idx + 1;
+
+                if (isOrig) {
+                    const line = Math.min(
+                        Math.max(1, change.originalStartLineNumber || 1),
+                        Math.max(1, model.getLineCount())
+                    );
+                    const range = new monaco.Range(line, 1, line, 1);
+
+                    const pushLabel = origHasLines
+                        ? `Push to Right #${hunkNum}  >`
+                        : `Delete from Right #${hunkNum}  >`;
+
+                    lenses.push({
+                        range,
+                        command: {
+                            id: cmdPushRightId,
+                            title: pushLabel,
+                            arguments: [idx]
+                        }
+                    });
+
+                    if (origHasLines && modHasLines) {
+                        lenses.push({
+                            range,
+                            command: {
+                                id: cmdMergeRightId,
+                                title: `=  Merge Both`,
+                                arguments: [idx]
+                            }
+                        });
+                    }
+                } else {
+                    const line = Math.min(
+                        Math.max(1, change.modifiedStartLineNumber || 1),
+                        Math.max(1, model.getLineCount())
+                    );
+                    const range = new monaco.Range(line, 1, line, 1);
+
+                    const pullLabel = modHasLines
+                        ? `<  Pull to Left #${hunkNum}`
+                        : `<  Delete from Left #${hunkNum}`;
+
+                    lenses.push({
+                        range,
+                        command: {
+                            id: cmdPullLeftId,
+                            title: pullLabel,
+                            arguments: [idx]
+                        }
+                    });
+
+                    if (origHasLines && modHasLines) {
+                        lenses.push({
+                            range,
+                            command: {
+                                id: cmdMergeLeftId,
+                                title: `=  Merge Both`,
+                                arguments: [idx]
+                            }
+                        });
+                    }
+                }
+            });
+
+            return { lenses, dispose: () => {} };
+        }
+    });
+
     const updateDiffState = () => {
         const changes = diffEditor.getLineChanges() || [];
         currentLineChanges = changes;
 
-        // Reset diff index if out of bounds
-        if (currentDiffIndex >= changes.length) {
-            currentDiffIndex = changes.length - 1;
+        if (changes.length === 0) {
+            currentDiffIndex = -1;
+        } else if (currentDiffIndex < 0 || currentDiffIndex >= changes.length) {
+            currentDiffIndex = 0;
         }
 
-        // Update Diff Counter Badge
         if (diffCountBadge) {
             const count = changes.length;
             if (count === 0) {
                 diffCountBadge.innerText = '0 diffs';
                 diffCountBadge.className = 'diff-badge no-diff';
             } else {
-                diffCountBadge.innerText = `${count} diff${count > 1 ? 's' : ''}`;
+                diffCountBadge.innerText = `Diff ${currentDiffIndex + 1} of ${count}`;
                 diffCountBadge.className = 'diff-badge has-diff';
             }
         }
 
-        // Update Decorations
         const newOriginalDecorations = [];
         const newModifiedDecorations = [];
 
-        changes.forEach(change => {
-            if (change.originalStartLineNumber > 0) {
-                newOriginalDecorations.push({
-                    range: new monaco.Range(change.originalStartLineNumber, 1, change.originalStartLineNumber, 1),
-                    options: {
-                        glyphMarginClassName: 'diff-arrow-right',
-                        glyphMarginHoverMessage: { value: 'Copy Current Block to Modified' }
-                    }
-                });
-            }
+        changes.forEach((change, idx) => {
+            const isCurrent = idx === currentDiffIndex;
+            const origLine = Math.min(Math.max(1, change.originalStartLineNumber || 1), Math.max(1, originalModel.getLineCount()));
+            const modLine = Math.min(Math.max(1, change.modifiedStartLineNumber || 1), Math.max(1, modifiedModel.getLineCount()));
+            const origEnd = change.originalEndLineNumber > 0 ? change.originalEndLineNumber : origLine;
+            const modEnd = change.modifiedEndLineNumber > 0 ? change.modifiedEndLineNumber : modLine;
 
-            if (change.modifiedStartLineNumber > 0) {
+            // Glyph Margin Arrow on Original Side
+            newOriginalDecorations.push({
+                range: new monaco.Range(origLine, 1, origLine, 1),
+                options: {
+                    glyphMarginClassName: 'diff-arrow-right',
+                    glyphMarginHoverMessage: { value: `Push Hunk #${idx + 1} to Right (Modified) >` }
+                }
+            });
+
+            // Glyph Margin Arrow on Modified Side
+            newModifiedDecorations.push({
+                range: new monaco.Range(modLine, 1, modLine, 1),
+                options: {
+                    glyphMarginClassName: 'diff-arrow-left',
+                    glyphMarginHoverMessage: { value: `< Pull Hunk #${idx + 1} to Left (Original)` }
+                }
+            });
+
+            // Top Separator Border on first line of every diff hunk to separate CodeLens from code
+            newOriginalDecorations.push({
+                range: new monaco.Range(origLine, 1, origLine, 1),
+                options: { isWholeLine: true, className: 'diff-hunk-top-border' }
+            });
+            newModifiedDecorations.push({
+                range: new monaco.Range(modLine, 1, modLine, 1),
+                options: { isWholeLine: true, className: 'diff-hunk-top-border' }
+            });
+
+            // Highlight active hunk border
+            if (isCurrent) {
+                newOriginalDecorations.push({
+                    range: new monaco.Range(origLine, 1, origEnd, 1),
+                    options: { isWholeLine: true, className: 'active-diff-hunk-line' }
+                });
                 newModifiedDecorations.push({
-                    range: new monaco.Range(change.modifiedStartLineNumber, 1, change.modifiedStartLineNumber, 1),
-                    options: {
-                        glyphMarginClassName: 'diff-arrow-left',
-                        glyphMarginHoverMessage: { value: 'Copy Current Block to Original' }
-                    }
+                    range: new monaco.Range(modLine, 1, modEnd, 1),
+                    options: { isWholeLine: true, className: 'active-diff-hunk-line' }
                 });
             }
         });
 
         originalDecorations = originalModel.deltaDecorations(originalDecorations, newOriginalDecorations);
         modifiedDecorations = modifiedModel.deltaDecorations(modifiedDecorations, newModifiedDecorations);
+        diffCodeLensEmitter.fire();
     };
 
-    // Navigate between differences
     const navigateDiff = (direction) => {
-        if (!currentLineChanges || currentLineChanges.length === 0) return;
+        if (!currentLineChanges || currentLineChanges.length === 0) {
+            showToast('No differences found between panes', 'info');
+            return;
+        }
 
         if (direction === 'next') {
             currentDiffIndex = (currentDiffIndex + 1) % currentLineChanges.length;
@@ -97,117 +453,267 @@ require(['vs/editor/editor.main'], function () {
             currentDiffIndex = (currentDiffIndex - 1 + currentLineChanges.length) % currentLineChanges.length;
         }
 
+        updateDiffState();
+
         const change = currentLineChanges[currentDiffIndex];
         if (change) {
             const modLine = change.modifiedStartLineNumber > 0 ? change.modifiedStartLineNumber : 1;
             const origLine = change.originalStartLineNumber > 0 ? change.originalStartLineNumber : 1;
 
-            diffEditor.getModifiedEditor().revealLineInCenter(modLine);
-            diffEditor.getOriginalEditor().revealLineInCenter(origLine);
+            modEditor.revealLineInCenter(modLine);
+            origEditor.revealLineInCenter(origLine);
         }
     };
 
     if (diffPrevBtn) diffPrevBtn.addEventListener('click', () => navigateDiff('prev'));
     if (diffNextBtn) diffNextBtn.addEventListener('click', () => navigateDiff('next'));
 
-    // Global Keyboard Shortcuts (F7 / Shift+F7 / Alt+N / Alt+P)
-    window.addEventListener('keydown', (e) => {
-        const diffView = document.getElementById('view-diff');
-        if (diffView && diffView.classList.contains('active')) {
-            if (e.key === 'F7') {
-                e.preventDefault();
-                navigateDiff(e.shiftKey ? 'prev' : 'next');
-            } else if (e.altKey && e.key.toLowerCase() === 'n') {
-                e.preventDefault();
-                navigateDiff('next');
-            } else if (e.altKey && e.key.toLowerCase() === 'p') {
-                e.preventDefault();
-                navigateDiff('prev');
+    // Auto-select hunk when user clicks inside either editor
+    const syncActiveHunkFromCursor = (lineNumber, isOrig) => {
+        if (!currentLineChanges || currentLineChanges.length === 0) return;
+        const foundIdx = currentLineChanges.findIndex(c => {
+            if (isOrig) {
+                const start = Math.max(1, c.originalStartLineNumber || 1);
+                const end = c.originalEndLineNumber > 0 ? c.originalEndLineNumber : start;
+                return lineNumber >= start && lineNumber <= end;
+            } else {
+                const start = Math.max(1, c.modifiedStartLineNumber || 1);
+                const end = c.modifiedEndLineNumber > 0 ? c.modifiedEndLineNumber : start;
+                return lineNumber >= start && lineNumber <= end;
             }
+        });
+        if (foundIdx !== -1 && foundIdx !== currentDiffIndex) {
+            currentDiffIndex = foundIdx;
+            updateDiffState();
         }
-    });
+    };
 
-    // Listen for Diff Updates
+    origEditor.onDidChangeCursorPosition(e => syncActiveHunkFromCursor(e.position.lineNumber, true));
+    modEditor.onDidChangeCursorPosition(e => syncActiveHunkFromCursor(e.position.lineNumber, false));
+
     diffEditor.onDidUpdateDiff(() => {
         updateDiffState();
     });
 
-    // Handle Clicks in Glyph Margin (Original -> Modified)
-    diffEditor.getOriginalEditor().onMouseDown((e) => {
+    // Glyph Margin Clicks (Now uses the full 3-way applyHunkAction engine!)
+    origEditor.onMouseDown((e) => {
         if (e.target.type === monaco.editor.MouseTargetType.GUTTER_GLYPH_MARGIN) {
             const lineNumber = e.target.position.lineNumber;
-            const change = currentLineChanges.find(c =>
-                lineNumber >= c.originalStartLineNumber && lineNumber <= c.originalEndLineNumber
-            );
-
-            if (change && change.originalStartLineNumber > 0) {
-                // Get lines from Original
-                const origLines = originalModel.getLinesContent().slice(
-                    change.originalStartLineNumber - 1,
-                    change.originalEndLineNumber
-                );
-                const textToCopy = origLines.join('\n');
-
-                let targetRange;
-                if (change.modifiedStartLineNumber > 0 && change.modifiedEndLineNumber >= change.modifiedStartLineNumber) {
-                    // Replace existing modified block
-                    targetRange = new monaco.Range(
-                        change.modifiedStartLineNumber, 1,
-                        change.modifiedEndLineNumber, modifiedModel.getLineMaxColumn(change.modifiedEndLineNumber)
-                    );
-                } else {
-                    // Insertion into modified
-                    const insertLine = Math.max(1, change.modifiedStartLineNumber);
-                    targetRange = new monaco.Range(insertLine, 1, insertLine, 1);
-                }
-
-                modifiedModel.pushEditOperations([], [{
-                    range: targetRange,
-                    text: textToCopy
-                }], () => null);
+            const hunkIdx = currentLineChanges.findIndex(c => {
+                const start = Math.max(1, c.originalStartLineNumber || 1);
+                const end = c.originalEndLineNumber > 0 ? c.originalEndLineNumber : start;
+                return lineNumber >= start && lineNumber <= end;
+            });
+            if (hunkIdx !== -1) {
+                currentDiffIndex = hunkIdx;
+                applyHunkAction(hunkIdx, 'push-right');
             }
         }
     });
 
-    // Handle Clicks in Glyph Margin (Modified -> Original)
-    diffEditor.getModifiedEditor().onMouseDown((e) => {
+    modEditor.onMouseDown((e) => {
         if (e.target.type === monaco.editor.MouseTargetType.GUTTER_GLYPH_MARGIN) {
             const lineNumber = e.target.position.lineNumber;
-            const change = currentLineChanges.find(c =>
-                lineNumber >= c.modifiedStartLineNumber && lineNumber <= c.modifiedEndLineNumber
-            );
-
-            if (change && change.modifiedStartLineNumber > 0) {
-                // Get lines from Modified
-                const modLines = modifiedModel.getLinesContent().slice(
-                    change.modifiedStartLineNumber - 1,
-                    change.modifiedEndLineNumber
-                );
-                const textToCopy = modLines.join('\n');
-
-                let targetRange;
-                if (change.originalStartLineNumber > 0 && change.originalEndLineNumber >= change.originalStartLineNumber) {
-                    // Replace existing original block
-                    targetRange = new monaco.Range(
-                        change.originalStartLineNumber, 1,
-                        change.originalEndLineNumber, originalModel.getLineMaxColumn(change.originalEndLineNumber)
-                    );
-                } else {
-                    // Insertion into original
-                    const insertLine = Math.max(1, change.originalStartLineNumber);
-                    targetRange = new monaco.Range(insertLine, 1, insertLine, 1);
-                }
-
-                originalModel.pushEditOperations([], [{
-                    range: targetRange,
-                    text: textToCopy
-                }], () => null);
+            const hunkIdx = currentLineChanges.findIndex(c => {
+                const start = Math.max(1, c.modifiedStartLineNumber || 1);
+                const end = c.modifiedEndLineNumber > 0 ? c.modifiedEndLineNumber : start;
+                return lineNumber >= start && lineNumber <= end;
+            });
+            if (hunkIdx !== -1) {
+                currentDiffIndex = hunkIdx;
+                applyHunkAction(hunkIdx, 'pull-left');
             }
         }
     });
 
-    // --- Formatter Editors (View 2) ---
-    // Input Editor (Left)
+    // Center Active Hunk Merge Toolbar Buttons
+    document.getElementById('hunk-push-right-btn')?.addEventListener('click', () => {
+        applyHunkAction(currentDiffIndex, 'push-right');
+    });
+    document.getElementById('hunk-pull-left-btn')?.addEventListener('click', () => {
+        applyHunkAction(currentDiffIndex, 'pull-left');
+    });
+    document.getElementById('hunk-merge-both-btn')?.addEventListener('click', () => {
+        applyHunkAction(currentDiffIndex, 'merge-to-right');
+    });
+
+    // Per-Pane Undo / Copy Controls
+    document.getElementById('undo-original-btn')?.addEventListener('click', () => {
+        origEditor.trigger('toolbar', 'undo', null);
+        showToast('Undid last change in Original pane', 'info');
+    });
+    document.getElementById('copy-original-btn')?.addEventListener('click', () => {
+        navigator.clipboard.writeText(originalModel.getValue()).then(() => {
+            showToast('Copied Original code to clipboard!', 'success');
+        });
+    });
+
+    document.getElementById('undo-modified-btn')?.addEventListener('click', () => {
+        modEditor.trigger('toolbar', 'undo', null);
+        showToast('Undid last change in Modified pane', 'info');
+    });
+    document.getElementById('copy-modified-btn')?.addEventListener('click', () => {
+        navigator.clipboard.writeText(modifiedModel.getValue()).then(() => {
+            showToast('Copied Modified code to clipboard!', 'success');
+        });
+    });
+
+    // Diff Controls
+    const diffLangSelector = document.getElementById('diff-language-selector');
+    diffLangSelector.addEventListener('change', (e) => {
+        const newLang = e.target.value;
+        monaco.editor.setModelLanguage(originalModel, newLang);
+        monaco.editor.setModelLanguage(modifiedModel, newLang);
+    });
+
+    document.getElementById('diff-swap-btn')?.addEventListener('click', () => {
+        const orig = originalModel.getValue();
+        const mod = modifiedModel.getValue();
+        originalModel.setValue(mod);
+        modifiedModel.setValue(orig);
+        showToast('Swapped Original and Modified panes', 'info');
+    });
+
+    document.getElementById('diff-clear-btn')?.addEventListener('click', () => {
+        originalModel.setValue("");
+        modifiedModel.setValue("");
+        const origLabel = document.getElementById('original-pane-label');
+        const modLabel = document.getElementById('modified-pane-label');
+        if (origLabel) origLabel.innerText = "Original";
+        if (modLabel) modLabel.innerText = "Modified";
+        showToast('Cleared both diff editors', 'info');
+    });
+
+    const diffToggleInlineBtn = document.getElementById('diff-toggle-inline');
+    let isSideBySide = true;
+    diffToggleInlineBtn?.addEventListener('click', () => {
+        isSideBySide = !isSideBySide;
+        diffEditor.updateOptions({ renderSideBySide: isSideBySide });
+        diffToggleInlineBtn.classList.toggle('active', !isSideBySide);
+        diffToggleInlineBtn.title = isSideBySide ? "Toggle Split / Unified View" : "Unified View Active (Click for Split View)";
+        showToast(isSideBySide ? 'Switched to Side-by-Side Diff' : 'Switched to Inline Unified Diff', 'info');
+    });
+
+    const diffToggleWhitespaceBtn = document.getElementById('diff-toggle-whitespace');
+    let ignoreWhitespace = false;
+    diffToggleWhitespaceBtn?.addEventListener('click', () => {
+        ignoreWhitespace = !ignoreWhitespace;
+        diffEditor.updateOptions({ ignoreTrimWhitespace: ignoreWhitespace });
+        diffToggleWhitespaceBtn.classList.toggle('active', ignoreWhitespace);
+        showToast(ignoreWhitespace ? 'Ignoring whitespace differences' : 'Showing all whitespace differences', 'info');
+    });
+
+    // Sample Diff Button
+    document.getElementById('diff-sample-btn')?.addEventListener('click', () => {
+        diffLangSelector.value = 'sql';
+        monaco.editor.setModelLanguage(originalModel, 'sql');
+        monaco.editor.setModelLanguage(modifiedModel, 'sql');
+
+        originalModel.setValue(`CREATE PROCEDURE dbo.usp_GetCustomerOrders
+    @CustomerId INT,
+    @StartDate DATETIME
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT 
+        o.OrderID,
+        o.OrderDate,
+        c.CustomerName,
+        o.TotalAmount,
+        o.Status
+    FROM dbo.Orders o
+    INNER JOIN dbo.Customers c ON o.CustomerID = c.CustomerID
+    WHERE o.CustomerID = @CustomerId
+      AND o.OrderDate >= @StartDate
+    ORDER BY o.OrderDate DESC;
+END;`);
+
+        modifiedModel.setValue(`CREATE OR ALTER PROCEDURE dbo.usp_GetCustomerOrders
+    @CustomerId INT,
+    @StartDate DATE,
+    @IncludeCancelled BIT = 0
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT 
+        o.OrderID,
+        CAST(o.OrderDate AS DATE) AS OrderDate,
+        c.CustomerName,
+        c.EmailAddress,
+        o.TotalAmount,
+        ISNULL(o.DiscountAmount, 0.00) AS DiscountAmount,
+        o.Status
+    FROM dbo.Orders o WITH (NOLOCK)
+    INNER JOIN dbo.Customers c WITH (NOLOCK) ON o.CustomerID = c.CustomerID
+    WHERE o.CustomerID = @CustomerId
+      AND o.OrderDate >= @StartDate
+      AND (@IncludeCancelled = 1 OR o.Status <> 'Cancelled')
+    ORDER BY o.OrderDate DESC, o.OrderID DESC;
+END;`);
+        showToast('Loaded sample T-SQL stored procedure diff', 'success');
+    });
+
+    // Diff Pane File Uploads
+    const detectLanguageFromExtension = (filename) => {
+        const ext = filename.split('.').pop().toLowerCase();
+        const langMap = {
+            'js': 'javascript', 'jsx': 'javascript', 'mjs': 'javascript',
+            'ts': 'typescript', 'tsx': 'typescript',
+            'html': 'html', 'htm': 'html',
+            'css': 'css', 'scss': 'css', 'less': 'css',
+            'json': 'json', 'py': 'python', 'java': 'java',
+            'cpp': 'cpp', 'c': 'cpp', 'h': 'cpp', 'hpp': 'cpp',
+            'cs': 'csharp', 'sql': 'sql', 'xml': 'xml', 'svg': 'xml',
+            'md': 'markdown', 'markdown': 'markdown', 'txt': 'plaintext'
+        };
+        return langMap[ext] || null;
+    };
+
+    const loadFileIntoModel = (file, model, labelElement, defaultLabel) => {
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = (e) => {
+            model.setValue(e.target.result);
+            if (labelElement) {
+                labelElement.innerText = `${defaultLabel}: ${file.name}`;
+                labelElement.title = file.name;
+            }
+            const detectedLang = detectLanguageFromExtension(file.name);
+            if (detectedLang) {
+                diffLangSelector.value = detectedLang;
+                monaco.editor.setModelLanguage(originalModel, detectedLang);
+                monaco.editor.setModelLanguage(modifiedModel, detectedLang);
+            }
+            showToast(`Loaded ${file.name} into ${defaultLabel}`, 'success');
+        };
+        reader.readAsText(file);
+    };
+
+    const uploadOriginalBtn = document.getElementById('upload-original-btn');
+    const originalFileInput = document.getElementById('original-file-input');
+    const originalPaneLabel = document.getElementById('original-pane-label');
+    if (uploadOriginalBtn && originalFileInput) {
+        uploadOriginalBtn.addEventListener('click', () => originalFileInput.click());
+        originalFileInput.addEventListener('change', (e) => {
+            if (e.target.files.length) loadFileIntoModel(e.target.files[0], originalModel, originalPaneLabel, 'Original');
+        });
+    }
+
+    const uploadModifiedBtn = document.getElementById('upload-modified-btn');
+    const modifiedFileInput = document.getElementById('modified-file-input');
+    const modifiedPaneLabel = document.getElementById('modified-pane-label');
+    if (uploadModifiedBtn && modifiedFileInput) {
+        uploadModifiedBtn.addEventListener('click', () => modifiedFileInput.click());
+        modifiedFileInput.addEventListener('change', (e) => {
+            if (e.target.files.length) loadFileIntoModel(e.target.files[0], modifiedModel, modifiedPaneLabel, 'Modified');
+        });
+    }
+
+    // =========================================================================
+    // 2. CODE FORMATTER & UNESCAPER (View 2 - JSON, SQL, XML)
+    // =========================================================================
     const formatInputEditor = monaco.editor.create(document.getElementById('format-input'), {
         value: "",
         language: "json",
@@ -220,7 +726,6 @@ require(['vs/editor/editor.main'], function () {
         fontFamily: "'JetBrains Mono', 'Courier New', monospace"
     });
 
-    // Output Editor (Right)
     const formatOutputEditor = monaco.editor.create(document.getElementById('format-output'), {
         value: "",
         language: "json",
@@ -228,312 +733,50 @@ require(['vs/editor/editor.main'], function () {
         automaticLayout: false,
         minimap: { enabled: false },
         readOnly: true,
+        wordWrap: 'on',
         scrollBeyondLastLine: false,
         fontSize: 14,
         fontFamily: "'JetBrains Mono', 'Courier New', monospace"
     });
 
-    // --- Navigation Logic ---
-    const navItems = document.querySelectorAll('.nav-item[data-target]');
-    const views = document.querySelectorAll('.view');
-
-    navItems.forEach(item => {
-        item.addEventListener('click', () => {
-            // Update Nav State
-            navItems.forEach(n => n.classList.remove('active'));
-            item.classList.add('active');
-
-            // Update View State
-            const targetId = item.getAttribute('data-target');
-            views.forEach(view => {
-                view.classList.remove('active');
-                if (view.id === targetId) {
-                    view.classList.add('active');
-                }
-            });
-
-            // Trigger Resize for Monaco Editors
-            setTimeout(() => {
-                if (targetId === 'view-diff') {
-                    diffEditor.layout();
-                } else if (targetId === 'view-format') {
-                    formatInputEditor.layout();
-                    formatOutputEditor.layout();
-                } else if (targetId === 'view-sql-gen') {
-                    sqlOutputEditor.layout();
-                } else if (targetId === 'view-json-gen') {
-                    jsonOutputEditor.layout();
-                } else if (targetId === 'view-excel-gen') {
-                    excelInputEditor.layout();
-                } else if (targetId === 'view-html-render') {
-                    htmlInputEditor.layout();
-                }
-            }, 10);
-        });
-    });
-
-    // --- Window Resize Handling ---
-    window.addEventListener('resize', () => {
-        if (document.getElementById('view-diff').classList.contains('active')) {
-            diffEditor.layout();
-        } else if (document.getElementById('view-format').classList.contains('active')) {
-            formatInputEditor.layout();
-            formatOutputEditor.layout();
-        } else if (document.getElementById('view-sql-gen').classList.contains('active')) {
-            sqlOutputEditor.layout();
-        } else if (document.getElementById('view-json-gen').classList.contains('active')) {
-            jsonOutputEditor.layout();
-        } else if (document.getElementById('view-excel-gen').classList.contains('active')) {
-            excelInputEditor.layout();
-        } else if (document.getElementById('view-html-render').classList.contains('active')) {
-            htmlInputEditor.layout();
-        }
-    });
-
-
-    // --- Diff View Controls ---
-    const diffLangSelector = document.getElementById('diff-language-selector');
-    diffLangSelector.addEventListener('change', (e) => {
-        const newLang = e.target.value;
-        monaco.editor.setModelLanguage(originalModel, newLang);
-        monaco.editor.setModelLanguage(modifiedModel, newLang);
-    });
-
-    // Transfer Buttons
-    document.getElementById('transfer-to-modified').addEventListener('click', () => {
-        modifiedModel.setValue(originalModel.getValue());
-    });
-
-    document.getElementById('transfer-to-original').addEventListener('click', () => {
-        originalModel.setValue(modifiedModel.getValue());
-    });
-
-    // Swap Content Button
-    const diffSwapBtn = document.getElementById('diff-swap-btn');
-    if (diffSwapBtn) {
-        diffSwapBtn.addEventListener('click', () => {
-            const orig = originalModel.getValue();
-            const mod = modifiedModel.getValue();
-            originalModel.setValue(mod);
-            modifiedModel.setValue(orig);
-        });
-    }
-
-    // Clear Editors Button
-    const diffClearBtn = document.getElementById('diff-clear-btn');
-    if (diffClearBtn) {
-        diffClearBtn.addEventListener('click', () => {
-            originalModel.setValue("");
-            modifiedModel.setValue("");
-            const origLabel = document.getElementById('original-pane-label');
-            const modLabel = document.getElementById('modified-pane-label');
-            if (origLabel) origLabel.innerText = "Original";
-            if (modLabel) modLabel.innerText = "Modified";
-        });
-    }
-
-    // Split / Inline View Toggle
-    const diffToggleInlineBtn = document.getElementById('diff-toggle-inline');
-    let isSideBySide = true;
-    if (diffToggleInlineBtn) {
-        diffToggleInlineBtn.addEventListener('click', () => {
-            isSideBySide = !isSideBySide;
-            diffEditor.updateOptions({ renderSideBySide: isSideBySide });
-            diffToggleInlineBtn.classList.toggle('active', !isSideBySide);
-            diffToggleInlineBtn.title = isSideBySide ? "Toggle Split / Unified View" : "Unified View Active (Click for Split View)";
-        });
-    }
-
-    // Ignore Whitespace Toggle
-    const diffToggleWhitespaceBtn = document.getElementById('diff-toggle-whitespace');
-    let ignoreWhitespace = false;
-    if (diffToggleWhitespaceBtn) {
-        diffToggleWhitespaceBtn.addEventListener('click', () => {
-            ignoreWhitespace = !ignoreWhitespace;
-            diffEditor.updateOptions({ ignoreTrimWhitespace: ignoreWhitespace });
-            diffToggleWhitespaceBtn.classList.toggle('active', ignoreWhitespace);
-            diffToggleWhitespaceBtn.title = ignoreWhitespace ? "Ignoring Whitespace (Click to Show All Space Changes)" : "Toggle Ignore Whitespace";
-        });
-    }
-
-    // --- Diff View Pane File Upload Handlers ---
-    const uploadOriginalBtn = document.getElementById('upload-original-btn');
-    const originalFileInput = document.getElementById('original-file-input');
-    const originalPaneLabel = document.getElementById('original-pane-label');
-
-    const uploadModifiedBtn = document.getElementById('upload-modified-btn');
-    const modifiedFileInput = document.getElementById('modified-file-input');
-    const modifiedPaneLabel = document.getElementById('modified-pane-label');
-
-    const detectLanguageFromExtension = (filename) => {
-        const ext = filename.split('.').pop().toLowerCase();
-        const langMap = {
-            'js': 'javascript', 'jsx': 'javascript', 'mjs': 'javascript',
-            'ts': 'typescript', 'tsx': 'typescript',
-            'html': 'html', 'htm': 'html',
-            'css': 'css', 'scss': 'css', 'less': 'css',
-            'json': 'json',
-            'py': 'python',
-            'java': 'java',
-            'cpp': 'cpp', 'c': 'cpp', 'h': 'cpp', 'hpp': 'cpp',
-            'cs': 'csharp',
-            'sql': 'sql',
-            'xml': 'xml', 'svg': 'xml',
-            'md': 'markdown', 'markdown': 'markdown',
-            'txt': 'plaintext'
-        };
-        return langMap[ext] || null;
-    };
-
-    const loadFileIntoModel = (file, model, labelElement, defaultLabel) => {
-        if (!file) return;
-        const reader = new FileReader();
-        reader.onload = (e) => {
-            const content = e.target.result;
-            model.setValue(content);
-            if (labelElement) {
-                labelElement.innerText = `${defaultLabel}: ${file.name}`;
-                labelElement.title = file.name;
-            }
-            // Auto-detect and set language if matching extension found
-            const detectedLang = detectLanguageFromExtension(file.name);
-            if (detectedLang) {
-                diffLangSelector.value = detectedLang;
-                monaco.editor.setModelLanguage(originalModel, detectedLang);
-                monaco.editor.setModelLanguage(modifiedModel, detectedLang);
-            }
-        };
-        reader.readAsText(file);
-    };
-
-    if (uploadOriginalBtn && originalFileInput) {
-        uploadOriginalBtn.addEventListener('click', () => originalFileInput.click());
-        originalFileInput.addEventListener('change', (e) => {
-            if (e.target.files.length) {
-                loadFileIntoModel(e.target.files[0], originalModel, originalPaneLabel, 'Original');
-            }
-        });
-    }
-
-    if (uploadModifiedBtn && modifiedFileInput) {
-        uploadModifiedBtn.addEventListener('click', () => modifiedFileInput.click());
-        modifiedFileInput.addEventListener('change', (e) => {
-            if (e.target.files.length) {
-                loadFileIntoModel(e.target.files[0], modifiedModel, modifiedPaneLabel, 'Modified');
-            }
-        });
-    }
-
-
-    // --- Formatter View Controls ---
     const formatLangSelector = document.getElementById('format-language-selector');
+    const formatStatusPill = document.getElementById('format-status-pill');
 
-    // Reusable Format Function
-    const performFormat = () => {
-        const lang = formatLangSelector.value;
-        const value = formatInputEditor.getValue();
-        if (!value.trim()) {
-            formatOutputEditor.setValue("");
-            return;
-        }
+    function setFormatStatus(text, isValid = true) {
+        if (!formatStatusPill) return;
+        formatStatusPill.innerText = text;
+        formatStatusPill.className = `status-pill ${isValid ? 'valid' : 'invalid'}`;
+    }
 
-        try {
-            let formatted = value;
-            if (lang === 'json') {
-                formatted = JSON.stringify(JSON.parse(value), null, 4);
-            } else if (lang === 'xml') {
-                formatted = formatXml(value);
-            }
-            formatOutputEditor.setValue(formatted);
-        } catch (e) {
-            // Display error in the output editor instead of toaster/alert
-            formatOutputEditor.setValue(`Error parsing ${lang.toUpperCase()}:\n${e.message}`);
-        }
-    };
+    // Lightweight T-SQL Formatter
+    function formatSql(sql) {
+        if (!sql || !sql.trim()) return '';
+        let str = sql.replace(/\s+/g, ' ').trim();
 
-    // Auto-Format on Content Change (Paste/Type)
-    formatInputEditor.onDidChangeModelContent(() => {
-        performFormat();
-    });
+        const majorKeywords = [
+            'SELECT', 'FROM', 'INNER JOIN', 'LEFT OUTER JOIN', 'RIGHT OUTER JOIN',
+            'FULL OUTER JOIN', 'LEFT JOIN', 'RIGHT JOIN', 'CROSS JOIN', 'JOIN',
+            'WHERE', 'GROUP BY', 'HAVING', 'ORDER BY', 'UNION ALL', 'UNION',
+            'INSERT INTO', 'VALUES', 'UPDATE', 'SET', 'DELETE FROM',
+            'CREATE OR ALTER PROCEDURE', 'CREATE PROCEDURE', 'CREATE TABLE',
+            'DECLARE', 'BEGIN', 'END', 'GO'
+        ];
 
-    // Language Change Trigger
-    formatLangSelector.addEventListener('change', (e) => {
-        const newLang = e.target.value;
-        monaco.editor.setModelLanguage(formatInputEditor.getModel(), newLang);
-        monaco.editor.setModelLanguage(formatOutputEditor.getModel(), newLang);
-        performFormat();
-    });
-
-    const formatBtn = document.getElementById('format-btn');
-    formatBtn.addEventListener('click', () => {
-        performFormat();
-    });
-
-    const unescapeBtn = document.getElementById('unescape-btn');
-    unescapeBtn.addEventListener('click', () => {
-        const value = formatInputEditor.getValue();
-        if (!value.trim()) return;
-
-        try {
-            // First parse the input as JSON string
-            const parsed = JSON.parse(value);
-            
-            // Check if result is a string (meaning input was an escaped JSON string)
-            if (typeof parsed === 'string') {
-                formatInputEditor.setValue(parsed);
-                // The onDidChangeModelContent listener will trigger performFormat() automatically
-            } else {
-                // If it's already an object/array, performFormat will just format it
-                // We could show a message, but for now just ensure it's formatted
-                performFormat();
-                // Maybe show a quick status? 
-                // Let's use the output editor for temporary feedback if needed, but performFormat writes to it.
-                // If parsed is not a string, it means it wasn't a stringified JSON string.
-                // Example: User put {"a":1} directly. JSON.parse returns object.
-                // User put "foo". JSON.parse returns "foo".
-                // If user put "\"foo\"". JSON.parse returns "foo".
-                // We only want to "unescape" if we actually peeled off a layer of stringification that resulted in a JSON string.
-                // But generally "Unescape" implies "Treat as JSON string and give me the content".
-            }
-        } catch (e) {
-            formatOutputEditor.setValue(`Error unescaping: ${e.message}`);
-        }
-    });
-
-    const copyBtn = document.getElementById('copy-btn');
-    copyBtn.addEventListener('click', () => {
-        const value = formatOutputEditor.getValue();
-        if (value.startsWith("Error parsing")) return; // Don't copy errors blindly
-
-        navigator.clipboard.writeText(value).then(() => {
-            // Visual feedback (optional)
-            const originalText = copyBtn.innerText;
-            copyBtn.innerText = 'Copied!';
-            setTimeout(() => copyBtn.innerText = originalText, 2000);
+        majorKeywords.forEach(kw => {
+            const regex = new RegExp(`\\b${kw.replace(/\s+/g, '\\s+')}\\b`, 'gi');
+            str = str.replace(regex, `\n${kw.toUpperCase()}`);
         });
-    });
 
-    const downloadBtn = document.getElementById('download-btn');
-    downloadBtn.addEventListener('click', () => {
-        const value = formatOutputEditor.getValue();
-        if (!value) return;
+        // Indent AND / OR / ON
+        str = str.replace(/\b(AND|OR)\b/gi, '\n  $1');
+        str = str.replace(/,\s*/g, ',\n    ');
 
-        const lang = formatLangSelector.value;
-        const extension = lang === 'json' ? 'json' : 'xml';
-        const blob = new Blob([value], { type: 'text/plain' });
-        const url = window.URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = `formatted.${extension}`;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        window.URL.revokeObjectURL(url);
-    });
+        return str.trim();
+    }
 
     function formatXml(xml) {
         let formatted = '';
-        let reg = /(>)(<)(\/*)/g;
+        const reg = /(>)(<)(\/*)/g;
         xml = xml.replace(reg, '$1\r\n$2$3');
         let pad = 0;
         xml.split('\r\n').forEach((node) => {
@@ -541,126 +784,181 @@ require(['vs/editor/editor.main'], function () {
             if (node.match(/.+<\/\w[^>]*>$/)) {
                 indent = 0;
             } else if (node.match(/^<\/\w/)) {
-                if (pad !== 0) {
-                    pad -= 1;
-                }
+                if (pad !== 0) pad -= 1;
             } else if (node.match(/^<\w[^>]*[^\/]>.*$/)) {
                 indent = 1;
             } else {
                 indent = 0;
             }
-
-            let padding = '';
-            for (let i = 0; i < pad; i++) {
-                padding += '  ';
-            }
-
+            const padding = '  '.repeat(pad);
             formatted += padding + node + '\r\n';
             pad += indent;
         });
-        return formatted;
+        return formatted.trim();
     }
 
-    // --- Theme Toggle (Global) ---
-    const themeToggle = document.getElementById('theme-toggle');
-    let isDark = true;
+    const performFormat = (minify = false) => {
+        const lang = formatLangSelector.value;
+        const value = formatInputEditor.getValue();
+        if (!value.trim()) {
+            formatOutputEditor.setValue("");
+            setFormatStatus("Ready", true);
+            return;
+        }
 
-    themeToggle.addEventListener('click', () => {
-        isDark = !isDark;
-        if (isDark) {
-            monaco.editor.setTheme('vs-dark');
-            document.documentElement.style.setProperty('--bg-primary', '#0f1115');
-            document.documentElement.style.setProperty('--bg-secondary', '#161b22');
-            document.documentElement.style.setProperty('--bg-tertiary', '#21262d');
-            document.documentElement.style.setProperty('--text-primary', '#f0f6fc');
-            document.documentElement.style.setProperty('--text-secondary', '#8b949e');
-            document.documentElement.style.setProperty('--border-color', '#30363d');
-        } else {
-            monaco.editor.setTheme('vs');
-            document.documentElement.style.setProperty('--bg-primary', '#ffffff');
-            document.documentElement.style.setProperty('--bg-secondary', '#f6f8fa');
-            document.documentElement.style.setProperty('--bg-tertiary', '#eaeef2');
-            document.documentElement.style.setProperty('--text-primary', '#24292f');
-            document.documentElement.style.setProperty('--text-secondary', '#57606a');
-            document.documentElement.style.setProperty('--border-color', '#d0d7de');
+        try {
+            let result = value;
+            if (lang === 'json') {
+                const parsed = JSON.parse(value);
+                result = JSON.stringify(parsed, null, minify ? 0 : 4);
+                setFormatStatus(minify ? "Minified JSON" : "Valid JSON", true);
+            } else if (lang === 'xml') {
+                result = minify ? value.replace(/>\s+</g, '><').replace(/\s+/g, ' ').trim() : formatXml(value);
+                setFormatStatus(minify ? "Minified XML" : "Formatted XML", true);
+            } else if (lang === 'sql') {
+                result = minify ? value.replace(/\s+/g, ' ').trim() : formatSql(value);
+                setFormatStatus(minify ? "Minified SQL" : "Formatted SQL", true);
+            }
+            formatOutputEditor.setValue(result);
+        } catch (e) {
+            formatOutputEditor.setValue(`Error parsing ${lang.toUpperCase()}:\n${e.message}`);
+            setFormatStatus(`Invalid ${lang.toUpperCase()}`, false);
+        }
+    };
+
+    formatInputEditor.onDidChangeModelContent(() => performFormat(false));
+
+    formatLangSelector.addEventListener('change', (e) => {
+        const newLang = e.target.value;
+        monaco.editor.setModelLanguage(formatInputEditor.getModel(), newLang);
+        monaco.editor.setModelLanguage(formatOutputEditor.getModel(), newLang);
+        performFormat(false);
+    });
+
+    document.getElementById('format-btn').addEventListener('click', () => {
+        performFormat(false);
+        showToast('Prettified code', 'success');
+    });
+
+    document.getElementById('minify-btn')?.addEventListener('click', () => {
+        performFormat(true);
+        showToast('Minified output into single line', 'success');
+    });
+
+    document.getElementById('unescape-btn').addEventListener('click', () => {
+        const value = formatInputEditor.getValue().trim();
+        if (!value) return;
+
+        try {
+            const parsed = JSON.parse(value);
+            if (typeof parsed === 'string') {
+                formatInputEditor.setValue(parsed);
+                showToast('Unescaped stringified payload!', 'success');
+            } else {
+                // Also support unescaping raw escaped quotes like \"key\": \"val\"
+                const manualUnescaped = value.replace(/\\"/g, '"').replace(/\\\\/g, '\\');
+                formatInputEditor.setValue(manualUnescaped);
+                performFormat(false);
+                showToast('Formatted payload', 'info');
+            }
+        } catch (e) {
+            // Try stripping surrounding quotes and unescaping
+            try {
+                const rawUnescaped = value.replace(/^"|"$/g, '').replace(/\\"/g, '"').replace(/\\n/g, '\n').replace(/\\r/g, '\r');
+                formatInputEditor.setValue(rawUnescaped);
+                showToast('Unescaped raw string literals', 'success');
+            } catch (err) {
+                formatOutputEditor.setValue(`Error unescaping: ${e.message}`);
+                setFormatStatus("Unescape Error", false);
+            }
         }
     });
 
-    // --- SQL Generator (View 3) ---
-    const sqlOutputEditor = monaco.editor.create(document.getElementById('sql-output'), {
-        value: "-- Upload a sheet to generate SQL",
-        language: "sql",
-        theme: 'vs-dark',
-        automaticLayout: false,
-        minimap: { enabled: false },
-        readOnly: false, // User can modify if they want
-        scrollBeyondLastLine: false,
-        fontSize: 14,
-        fontFamily: "'JetBrains Mono', 'Courier New', monospace"
+    document.getElementById('escape-btn')?.addEventListener('click', () => {
+        const value = formatOutputEditor.getValue() || formatInputEditor.getValue();
+        if (!value.trim()) return;
+        const escaped = JSON.stringify(value);
+        formatOutputEditor.setValue(escaped);
+        setFormatStatus("Escaped String", true);
+        showToast('Converted to escaped string literal', 'success');
     });
 
-    // --- Navigation Update for SQL View ---
-    const sqlNavItem = document.querySelector('.nav-item[data-target="view-sql-gen"]');
-    if (sqlNavItem) {
-        sqlNavItem.addEventListener('click', () => {
-            setTimeout(() => {
-                sqlOutputEditor.layout();
-            }, 10);
+    document.getElementById('format-clear-btn')?.addEventListener('click', () => {
+        formatInputEditor.setValue('');
+        formatOutputEditor.setValue('');
+        setFormatStatus('Ready', true);
+    });
+
+    document.getElementById('format-sample-btn')?.addEventListener('click', () => {
+        const lang = formatLangSelector.value;
+        if (lang === 'json') {
+            formatInputEditor.setValue(`{"apiVersion":"2.1","database":"SQLServer_Prod","connectionPool":{"maxConnections":50,"idleTimeoutMs":30000,"encrypt":true},"tables":[{"name":"dbo.Transactions","rowCount":145200,"indexedColumns":["TransactionID","CustomerID","CreatedAt"]}]}`);
+        } else if (lang === 'sql') {
+            formatInputEditor.setValue(`select u.UserID, u.UserName, u.Email, r.RoleName, count(o.OrderID) as TotalOrders from dbo.Users u inner join dbo.UserRoles ur on u.UserID = ur.UserID inner join dbo.Roles r on ur.RoleID = r.RoleID left join dbo.Orders o on u.UserID = o.UserID where u.IsActive = 1 and o.OrderDate >= '2025-01-01' group by u.UserID, u.UserName, u.Email, r.RoleName having count(o.OrderID) > 5 order by TotalOrders desc`);
+        } else {
+            formatInputEditor.setValue(`<Configuration><Database provider="SqlServer"><ConnectionString>Server=tcp:prod-db.database.windows.net,1433;Database=CoreDB;</ConnectionString><CommandTimeout>60</CommandTimeout></Database><Logging level="Information"><Target type="Console"/><Target type="File" path="/logs/app.log"/></Logging></Configuration>`);
+        }
+        showToast(`Loaded sample ${lang.toUpperCase()}`, 'success');
+    });
+
+    // Formatter file upload
+    const formatUploadBtn = document.getElementById('format-upload-btn');
+    const formatFileInput = document.getElementById('format-file-input');
+    if (formatUploadBtn && formatFileInput) {
+        formatUploadBtn.addEventListener('click', () => formatFileInput.click());
+        formatFileInput.addEventListener('change', (e) => {
+            if (!e.target.files.length) return;
+            const file = e.target.files[0];
+            const reader = new FileReader();
+            reader.onload = (ev) => {
+                const ext = file.name.split('.').pop().toLowerCase();
+                if (['json', 'sql', 'xml'].includes(ext)) {
+                    formatLangSelector.value = ext;
+                    monaco.editor.setModelLanguage(formatInputEditor.getModel(), ext);
+                    monaco.editor.setModelLanguage(formatOutputEditor.getModel(), ext);
+                }
+                formatInputEditor.setValue(ev.target.result);
+                showToast(`Loaded ${file.name}`, 'success');
+            };
+            reader.readAsText(file);
         });
     }
 
-    // Also handle window resize for SQL editor
-    window.addEventListener('resize', () => {
-        if (document.getElementById('view-sql-gen').classList.contains('active')) {
-            sqlOutputEditor.layout();
+    document.getElementById('copy-btn').addEventListener('click', () => {
+        const value = formatOutputEditor.getValue();
+        if (!value || value.startsWith("Error parsing")) {
+            showToast('Nothing valid to copy', 'error');
+            return;
         }
+        navigator.clipboard.writeText(value).then(() => {
+            showToast('Formatted output copied to clipboard!', 'success');
+        });
     });
 
-
-    // --- File Upload & SQL Logic ---
-    const dropZone = document.getElementById('drop-zone');
-    const fileInput = document.getElementById('file-upload');
-    const generateBtn = document.getElementById('generate-sql-btn');
-    const sheetSelector = document.getElementById('sheet-selector');
-    const sheetContainer = document.getElementById('sheet-selection-container');
-
-    let loadedData = null; // Store parsed data
-    let currentWorkbook = null;
-
-    // Click to browse
-    dropZone.addEventListener('click', () => fileInput.click());
-
-    // Drag parsers
-    dropZone.addEventListener('dragover', (e) => {
-        e.preventDefault();
-        dropZone.classList.add('drag-over');
+    document.getElementById('download-btn').addEventListener('click', () => {
+        const value = formatOutputEditor.getValue();
+        if (!value) return;
+        const lang = formatLangSelector.value;
+        const blob = new Blob([value], { type: 'text/plain' });
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `formatted.${lang}`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        window.URL.revokeObjectURL(url);
+        showToast(`Downloaded formatted.${lang}`, 'success');
     });
 
-    dropZone.addEventListener('dragleave', () => {
-        dropZone.classList.remove('drag-over');
-    });
-
-    dropZone.addEventListener('drop', (e) => {
-        e.preventDefault();
-        dropZone.classList.remove('drag-over');
-        if (e.dataTransfer.files.length) {
-            handleFile(e.dataTransfer.files[0]);
-        }
-    });
-
-    fileInput.addEventListener('change', (e) => {
-        if (e.target.files.length) {
-            handleFile(e.target.files[0]);
-        }
-    });
-
-    // --- Data Validation & SQL Schema Inference Engine ---
+    // =========================================================================
+    // 3. DATA VALIDATION & SQL SCHEMA INFERENCE ENGINE
+    // =========================================================================
     const SqlSchemaInferrer = {
         isNullOrEmpty(val) {
             return val === null || val === undefined || (typeof val === 'string' && val.trim() === '');
         },
 
-        // Strict date patterns (ISO 8601, slashed, dotted, named month)
         DATE_PATTERNS: [
             /^\d{4}-\d{1,2}-\d{1,2}(?:[T\s]\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?)?$/,
             /^\d{4}\/\d{1,2}\/\d{1,2}(?:[T\s]\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?)?$/,
@@ -673,18 +971,15 @@ require(['vs/editor/editor.main'], function () {
 
         GUID_PATTERN: /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/,
 
-        // Validate a single cell value
         validateCell(val) {
             if (this.isNullOrEmpty(val)) {
                 return { type: 'NULL', val: null };
             }
 
-            // 1. Boolean check
             if (typeof val === 'boolean' || val === 'true' || val === 'false' || val === 'TRUE' || val === 'FALSE') {
                 return { type: 'BIT', val: val === true || String(val).toLowerCase() === 'true' };
             }
 
-            // 2. Pure JavaScript number checks
             if (typeof val === 'number') {
                 if (Number.isInteger(val)) {
                     if (val >= -2147483648 && val <= 2147483647) {
@@ -701,7 +996,6 @@ require(['vs/editor/editor.main'], function () {
                 }
             }
 
-            // 3. Date instance (from XLSX cellDates: true)
             if (val instanceof Date) {
                 if (!isNaN(val.getTime())) {
                     const hasTime = val.getHours() !== 0 || val.getMinutes() !== 0 || val.getSeconds() !== 0 || val.getMilliseconds() !== 0;
@@ -711,12 +1005,10 @@ require(['vs/editor/editor.main'], function () {
 
             const strVal = String(val).trim();
 
-            // 4. Preserve strings with leading zeros (e.g., "00123", "0987") as STRING to prevent data loss
             if (/^0\d+$/.test(strVal)) {
                 return { type: 'STRING', length: strVal.length, val: strVal };
             }
 
-            // 5. String of pure integer digits -> MUST be INT or BIGINT, NEVER DATETIME
             if (/^[+-]?\d+$/.test(strVal)) {
                 const num = Number(strVal);
                 if (num >= -2147483648 && num <= 2147483647 && strVal.length <= 10) {
@@ -726,7 +1018,6 @@ require(['vs/editor/editor.main'], function () {
                 }
             }
 
-            // 6. String of decimal number -> DECIMAL, NEVER DATETIME
             if (/^[+-]?\d+\.\d+$/.test(strVal)) {
                 const parts = strVal.replace(/^[+-]/, '').split('.');
                 const precision = parts[0].length + parts[1].length;
@@ -734,14 +1025,12 @@ require(['vs/editor/editor.main'], function () {
                 return { type: 'DECIMAL', precision, scale, val: Number(strVal) };
             }
 
-            // 7. Strict Date String check
             const matchesDatePattern = this.DATE_PATTERNS.some(pat => pat.test(strVal));
             if (matchesDatePattern) {
                 const parsedMs = Date.parse(strVal);
                 if (!isNaN(parsedMs)) {
                     const d = new Date(parsedMs);
                     const year = d.getFullYear();
-                    // Valid SQL Server DATETIME / DATE range: 1753 to 9999
                     if (year >= 1753 && year <= 9999) {
                         const hasTime = strVal.includes(':') || d.getHours() !== 0 || d.getMinutes() !== 0 || d.getSeconds() !== 0;
                         return { type: 'DATE_TIME', hasTime, val: d };
@@ -749,16 +1038,13 @@ require(['vs/editor/editor.main'], function () {
                 }
             }
 
-            // 8. GUID / UUID
             if (this.GUID_PATTERN.test(strVal)) {
                 return { type: 'GUID', val: strVal };
             }
 
-            // 9. Fallback to String / NVARCHAR
             return { type: 'STRING', length: strVal.length, val: strVal };
         },
 
-        // Infer column types across all rows in the dataset
         inferColumns(headers, rows, scanLimit = null) {
             const limit = scanLimit ? Math.min(rows.length, scanLimit) : rows.length;
 
@@ -769,7 +1055,6 @@ require(['vs/editor/editor.main'], function () {
                 let maxScale = 0;
                 let anyTime = false;
 
-                // Candidate flags
                 let canBeBit = true;
                 let canBeInt = true;
                 let canBeBigInt = true;
@@ -793,59 +1078,32 @@ require(['vs/editor/editor.main'], function () {
 
                     switch (res.type) {
                         case 'BIT':
-                            canBeInt = false;
-                            canBeBigInt = false;
-                            canBeDecimal = false;
-                            canBeDateTime = false;
-                            canBeGuid = false;
+                            canBeInt = false; canBeBigInt = false; canBeDecimal = false; canBeDateTime = false; canBeGuid = false;
                             break;
                         case 'INT':
-                            canBeBit = false;
-                            canBeDateTime = false;
-                            canBeGuid = false;
+                            canBeBit = false; canBeDateTime = false; canBeGuid = false;
                             break;
                         case 'BIGINT':
-                            canBeBit = false;
-                            canBeInt = false;
-                            canBeDateTime = false;
-                            canBeGuid = false;
+                            canBeBit = false; canBeInt = false; canBeDateTime = false; canBeGuid = false;
                             break;
                         case 'DECIMAL':
-                            canBeBit = false;
-                            canBeInt = false;
-                            canBeBigInt = false;
-                            canBeDateTime = false;
-                            canBeGuid = false;
+                            canBeBit = false; canBeInt = false; canBeBigInt = false; canBeDateTime = false; canBeGuid = false;
                             if (res.scale > maxScale) maxScale = res.scale;
                             if (res.precision > maxPrecision) maxPrecision = res.precision;
                             break;
                         case 'DATE_TIME':
-                            canBeBit = false;
-                            canBeInt = false;
-                            canBeBigInt = false;
-                            canBeDecimal = false;
-                            canBeGuid = false;
+                            canBeBit = false; canBeInt = false; canBeBigInt = false; canBeDecimal = false; canBeGuid = false;
                             if (res.hasTime) anyTime = true;
                             break;
                         case 'GUID':
-                            canBeBit = false;
-                            canBeInt = false;
-                            canBeBigInt = false;
-                            canBeDecimal = false;
-                            canBeDateTime = false;
+                            canBeBit = false; canBeInt = false; canBeBigInt = false; canBeDecimal = false; canBeDateTime = false;
                             break;
                         case 'STRING':
-                            canBeBit = false;
-                            canBeInt = false;
-                            canBeBigInt = false;
-                            canBeDecimal = false;
-                            canBeDateTime = false;
-                            canBeGuid = false;
+                            canBeBit = false; canBeInt = false; canBeBigInt = false; canBeDecimal = false; canBeDateTime = false; canBeGuid = false;
                             break;
                     }
                 }
 
-                // Decide SQL data type
                 let type = '';
                 let isNullable = hasNull || nonNullCount === 0 || limit < rows.length;
 
@@ -880,7 +1138,6 @@ require(['vs/editor/editor.main'], function () {
             });
         },
 
-        // Format value safely for SQL INSERT statements
         formatSqlValue(val, colType) {
             if (this.isNullOrEmpty(val)) return 'NULL';
 
@@ -891,7 +1148,7 @@ require(['vs/editor/editor.main'], function () {
                 return '0';
             }
 
-            if (typeUpper.startsWith('INT') || typeUpper.startsWith('BIGINT') || typeUpper.startsWith('DECIMAL')) {
+            if (typeUpper.startsWith('INT') || typeUpper.startsWith('BIGINT') || typeUpper.startsWith('DECIMAL') || typeUpper.startsWith('FLOAT')) {
                 const numVal = Number(String(val).trim());
                 return isNaN(numVal) ? `'${String(val).replace(/'/g, "''")}'` : String(val).trim();
             }
@@ -920,33 +1177,23 @@ require(['vs/editor/editor.main'], function () {
                 return `'${String(val).trim()}'`;
             }
 
-            // Strings: escape single quotes
             return `N'${String(val).replace(/'/g, "''")}'`;
         },
 
-        // Format JSON path for SQL Server OPENJSON WITH clause
-        // Handles dots (.), spaces, hyphens, and special characters safely
         formatJsonPath(propName) {
             const str = String(propName);
-            // Standard simple identifier: letters, numbers, underscores (not starting with a digit)
             if (/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(str)) {
                 return `'$.${str}'`;
             }
-            // Contains dots, dashes, spaces, symbols: must enclose in double quotes for OPENJSON
-            // e.g. '$."User.Name"' or '$."Order-ID"'
             const escaped = str.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/'/g, "''");
             return `'$."${escaped}"'`;
         },
 
-        // Helper to sanitize column names if requested
         sanitizeHeader(header) {
             if (!header) return 'Column_x';
             let str = String(header).trim();
-            // Replace dots, spaces, hyphens, and non-alphanumeric chars with underscore
             str = str.replace(/[\.\s\-\/\\]+/g, '_').replace(/[^a-zA-Z0-9_]/g, '_');
-            // Collapse multiple underscores
             str = str.replace(/_+/g, '_');
-            // Ensure does not start with digit
             if (/^[0-9]/.test(str)) {
                 str = 'Col_' + str;
             }
@@ -955,14 +1202,24 @@ require(['vs/editor/editor.main'], function () {
     };
     window.SqlSchemaInferrer = SqlSchemaInferrer;
 
-    // --- Data Preview & Column Selection State ---
+    // =========================================================================
+    // 4. INTERACTIVE PREVIEW, COLUMN SELECTION & TYPE OVERRIDE ENGINE
+    // =========================================================================
     let selectedColumnsSql = new Set();
     let selectedColumnsJson = new Set();
+    let typeOverridesSql = {};  // { colIndex: 'NVARCHAR(255)' }
+    let typeOverridesJson = {};
+
+    const COMMON_SQL_TYPES = [
+        'INT', 'BIGINT', 'DECIMAL(18,2)', 'DECIMAL(18,4)',
+        'BIT', 'DATE', 'DATETIME', 'UNIQUEIDENTIFIER',
+        'NVARCHAR(50)', 'NVARCHAR(255)', 'NVARCHAR(4000)', 'NVARCHAR(MAX)'
+    ];
 
     function getTypePillClass(type) {
         const t = (type || '').toUpperCase();
         if (t.startsWith('INT') || t.startsWith('BIGINT')) return 'type-int';
-        if (t.startsWith('DECIMAL')) return 'type-decimal';
+        if (t.startsWith('DECIMAL') || t.startsWith('FLOAT')) return 'type-decimal';
         if (t.startsWith('DATE') || t.startsWith('DATETIME')) return 'type-date';
         if (t.startsWith('NVARCHAR') || t.startsWith('VARCHAR')) return 'type-text';
         return 'type-other';
@@ -995,13 +1252,18 @@ require(['vs/editor/editor.main'], function () {
         });
     }
 
-    function escapeHtml(str) {
-        if (str === null || str === undefined) return '';
-        return String(str)
-            .replace(/&/g, '&amp;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;')
-            .replace(/"/g, '&quot;');
+    function triggerAutoGenerate(viewType) {
+        if (viewType === 'sql') {
+            const autoCb = document.getElementById('sql-auto-regen');
+            if (autoCb && autoCb.checked && loadedData) {
+                runSqlGeneration();
+            }
+        } else if (viewType === 'json') {
+            const autoCb = document.getElementById('json-auto-regen');
+            if (autoCb && autoCb.checked && jsonLoadedData) {
+                runJsonGeneration();
+            }
+        }
     }
 
     function renderDataPreview(viewType, data) {
@@ -1011,6 +1273,7 @@ require(['vs/editor/editor.main'], function () {
         const table = document.getElementById(`${viewType}-preview-table`);
         const badge = document.getElementById(`${viewType}-column-count-badge`);
         const editor = isSql ? sqlOutputEditor : jsonOutputEditor;
+        const typeOverrides = isSql ? typeOverridesSql : typeOverridesJson;
 
         if (!data || data.length === 0) {
             if (section) section.style.display = 'none';
@@ -1024,10 +1287,15 @@ require(['vs/editor/editor.main'], function () {
 
         const headers = extractHeaders(data, hasHeader, sanitizeHeaders);
         const rows = hasHeader ? data.slice(1) : data;
-        const colTypes = SqlSchemaInferrer.inferColumns(headers, rows);
+        const inferredTypes = SqlSchemaInferrer.inferColumns(headers, rows);
+
+        // Apply any user manual overrides
+        const colTypes = inferredTypes.map((c, idx) => ({
+            ...c,
+            type: typeOverrides[idx] || c.type
+        }));
 
         let selectedSet = isSql ? selectedColumnsSql : selectedColumnsJson;
-        // Default to all columns selected on initial load or if column count changed
         if (selectedSet.size === 0 || Math.max(...selectedSet) >= headers.length) {
             selectedSet.clear();
             for (let i = 0; i < headers.length; i++) {
@@ -1035,7 +1303,7 @@ require(['vs/editor/editor.main'], function () {
             }
         }
 
-        const updateSelectionUI = () => {
+        const updateSelectionUI = (shouldAutoGen = false) => {
             if (badge) {
                 badge.innerText = `${selectedSet.size} of ${headers.length} selected`;
             }
@@ -1056,6 +1324,19 @@ require(['vs/editor/editor.main'], function () {
                 const cb = el.querySelector('input[type="checkbox"]');
                 if (cb) cb.checked = isSelected;
             });
+
+            if (shouldAutoGen) {
+                triggerAutoGenerate(viewType);
+            }
+        };
+
+        // Helper to build Type Override Dropdown
+        const buildTypeSelectHtml = (colIdx, currentType) => {
+            const optionsSet = new Set([currentType, ...COMMON_SQL_TYPES]);
+            const optsHtml = Array.from(optionsSet).map(t =>
+                `<option value="${t}" ${t === currentType ? 'selected' : ''}>${t}</option>`
+            ).join('');
+            return `<select class="type-select-override ${getTypePillClass(currentType)}" data-type-col="${colIdx}" title="Click to override inferred SQL Data Type">${optsHtml}</select>`;
         };
 
         // Render Chips
@@ -1066,25 +1347,42 @@ require(['vs/editor/editor.main'], function () {
             const chip = document.createElement('div');
             chip.className = `column-chip ${isSelected ? 'active' : 'inactive'}`;
             chip.setAttribute('data-col', i);
+            chip.setAttribute('data-col-name', h.toLowerCase());
             chip.innerHTML = `
                 <input type="checkbox" ${isSelected ? 'checked' : ''}>
                 <span>${escapeHtml(h)}</span>
-                <span class="type-pill ${getTypePillClass(colInfo ? colInfo.type : '')}">${colInfo ? colInfo.type : 'NVARCHAR'}</span>
+                ${buildTypeSelectHtml(i, colInfo ? colInfo.type : 'NVARCHAR(50)')}
             `;
 
             chip.addEventListener('click', (e) => {
+                if (e.target.tagName === 'SELECT' || e.target.tagName === 'OPTION') return;
                 if (e.target.tagName !== 'INPUT') {
                     const cb = chip.querySelector('input[type="checkbox"]');
                     if (cb) cb.checked = !cb.checked;
                 }
                 const isChecked = chip.querySelector('input[type="checkbox"]').checked;
-                if (isChecked) {
-                    selectedSet.add(i);
-                } else {
-                    selectedSet.delete(i);
-                }
-                updateSelectionUI();
+                if (isChecked) selectedSet.add(i);
+                else selectedSet.delete(i);
+                updateSelectionUI(true);
             });
+
+            const selectEl = chip.querySelector('select.type-select-override');
+            if (selectEl) {
+                selectEl.addEventListener('change', (e) => {
+                    e.stopPropagation();
+                    const newType = e.target.value;
+                    typeOverrides[i] = newType;
+                    selectEl.className = `type-select-override ${getTypePillClass(newType)}`;
+                    // Also sync table header pill if exists
+                    const thPill = table.querySelector(`th[data-col="${i}"] .type-pill`);
+                    if (thPill) {
+                        thPill.innerText = newType;
+                        thPill.className = `type-pill ${getTypePillClass(newType)}`;
+                    }
+                    triggerAutoGenerate(viewType);
+                    showToast(`Set [${h}] type to ${newType}`, 'info');
+                });
+            }
 
             chipsContainer.appendChild(chip);
         });
@@ -1114,12 +1412,9 @@ require(['vs/editor/editor.main'], function () {
             if (cb) {
                 cb.addEventListener('change', () => {
                     const colIdx = parseInt(th.getAttribute('data-col'), 10);
-                    if (cb.checked) {
-                        selectedSet.add(colIdx);
-                    } else {
-                        selectedSet.delete(colIdx);
-                    }
-                    updateSelectionUI();
+                    if (cb.checked) selectedSet.add(colIdx);
+                    else selectedSet.delete(colIdx);
+                    updateSelectionUI(true);
                 });
             }
         });
@@ -1127,7 +1422,7 @@ require(['vs/editor/editor.main'], function () {
         table.appendChild(thead);
 
         const tbody = document.createElement('tbody');
-        const previewRows = rows.slice(0, 7);
+        const previewRows = rows.slice(0, 8);
         previewRows.forEach((row, rIdx) => {
             const tr = document.createElement('tr');
             let trHtml = `<td class="row-num-cell">${rIdx + 1}</td>`;
@@ -1147,29 +1442,48 @@ require(['vs/editor/editor.main'], function () {
         });
         table.appendChild(tbody);
 
-        updateSelectionUI();
+        updateSelectionUI(false);
 
-        // Wire toolbar buttons
-        const selectAllBtn = document.getElementById(`${viewType}-select-all-btn`);
-        const deselectAllBtn = document.getElementById(`${viewType}-deselect-all-btn`);
-        const toggleBtn = document.getElementById(`${viewType}-toggle-preview-btn`);
-
-        if (selectAllBtn && !selectAllBtn.dataset.wired) {
-            selectAllBtn.dataset.wired = 'true';
-            selectAllBtn.addEventListener('click', () => {
-                const sSet = isSql ? selectedColumnsSql : selectedColumnsJson;
-                for (let i = 0; i < headers.length; i++) sSet.add(i);
-                updateSelectionUI();
-            });
+        // Search filter for columns
+        const searchInput = document.getElementById(`${viewType}-col-search`);
+        if (searchInput) {
+            searchInput.oninput = (e) => {
+                const q = e.target.value.toLowerCase().trim();
+                chipsContainer.querySelectorAll('.column-chip').forEach(chip => {
+                    const name = chip.getAttribute('data-col-name') || '';
+                    chip.style.display = (!q || name.includes(q)) ? 'inline-flex' : 'none';
+                });
+            };
         }
 
-        if (deselectAllBtn && !deselectAllBtn.dataset.wired) {
-            deselectAllBtn.dataset.wired = 'true';
-            deselectAllBtn.addEventListener('click', () => {
-                const sSet = isSql ? selectedColumnsSql : selectedColumnsJson;
-                sSet.clear();
-                updateSelectionUI();
-            });
+        // Toolbar buttons
+        const selectAllBtn = document.getElementById(`${viewType}-select-all-btn`);
+        const deselectAllBtn = document.getElementById(`${viewType}-deselect-all-btn`);
+        const resetTypesBtn = document.getElementById(`${viewType}-reset-types-btn`);
+        const toggleBtn = document.getElementById(`${viewType}-toggle-preview-btn`);
+
+        if (selectAllBtn) {
+            selectAllBtn.onclick = () => {
+                for (let i = 0; i < headers.length; i++) selectedSet.add(i);
+                updateSelectionUI(true);
+            };
+        }
+
+        if (deselectAllBtn) {
+            deselectAllBtn.onclick = () => {
+                selectedSet.clear();
+                updateSelectionUI(true);
+            };
+        }
+
+        if (resetTypesBtn) {
+            resetTypesBtn.onclick = () => {
+                if (isSql) typeOverridesSql = {};
+                else typeOverridesJson = {};
+                renderDataPreview(viewType, data);
+                triggerAutoGenerate(viewType);
+                showToast('Reset all column types to auto-inferred schema', 'info');
+            };
         }
 
         if (toggleBtn && !toggleBtn.dataset.wired) {
@@ -1185,11 +1499,8 @@ require(['vs/editor/editor.main'], function () {
             });
         }
 
-        // Default to collapsed unless explicitly expanded by the user
-        if (section.dataset.userExpanded !== 'true') {
-            section.classList.add('preview-collapsed');
-            if (toggleBtn) toggleBtn.innerText = 'Expand ▼';
-        } else {
+        // Expand by default so user immediately sees interactive columns & type overrides
+        if (section.dataset.userExpanded === undefined || section.dataset.userExpanded === 'true') {
             section.classList.remove('preview-collapsed');
             if (toggleBtn) toggleBtn.innerText = 'Collapse ▲';
         }
@@ -1200,12 +1511,47 @@ require(['vs/editor/editor.main'], function () {
         }, 50);
     }
 
+    // =========================================================================
+    // 5. SHEET TO SQL GENERATOR (View 3)
+    // =========================================================================
+    const sqlOutputEditor = monaco.editor.create(document.getElementById('sql-output'), {
+        value: "-- Upload an Excel/CSV sheet or click '⚡ Load Sample Sheet' to generate T-SQL",
+        language: "sql",
+        theme: 'vs-dark',
+        automaticLayout: false,
+        minimap: { enabled: false },
+        readOnly: false,
+        scrollBeyondLastLine: false,
+        fontSize: 14,
+        fontFamily: "'JetBrains Mono', 'Courier New', monospace"
+    });
+
+    const dropZone = document.getElementById('drop-zone');
+    const fileInput = document.getElementById('file-upload');
+    const generateBtn = document.getElementById('generate-sql-btn');
+    const sheetSelector = document.getElementById('sheet-selector');
+    const sheetContainer = document.getElementById('sheet-selection-container');
+
+    let loadedData = null;
+    let currentWorkbook = null;
+
+    dropZone.addEventListener('click', () => fileInput.click());
+    dropZone.addEventListener('dragover', (e) => { e.preventDefault(); dropZone.classList.add('drag-over'); });
+    dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+    dropZone.addEventListener('drop', (e) => {
+        e.preventDefault();
+        dropZone.classList.remove('drag-over');
+        if (e.dataTransfer.files.length) handleFile(e.dataTransfer.files[0]);
+    });
+    fileInput.addEventListener('change', (e) => {
+        if (e.target.files.length) handleFile(e.target.files[0]);
+    });
+
     function handleFile(file) {
-        // Visual feedback
         const dropText = dropZone.querySelector('.drop-text p');
-        dropText.innerText = `Loaded: ${file.name}`;
+        dropText.innerText = `✅ Loaded: ${file.name}`;
         const sqlSec = document.getElementById('sql-preview-section');
-        if (sqlSec) sqlSec.dataset.userExpanded = '';
+        if (sqlSec) sqlSec.dataset.userExpanded = 'true';
 
         const reader = new FileReader();
         reader.onload = (e) => {
@@ -1213,7 +1559,6 @@ require(['vs/editor/editor.main'], function () {
             const workbook = XLSX.read(data, { type: 'array', cellDates: true });
             currentWorkbook = workbook;
 
-            // Populate Sheet Selector
             sheetSelector.innerHTML = '';
             if (workbook.SheetNames.length > 1) {
                 sheetContainer.style.display = 'flex';
@@ -1227,10 +1572,8 @@ require(['vs/editor/editor.main'], function () {
                 sheetContainer.style.display = 'none';
             }
 
-            // Load first sheet by default
             loadSheetData(workbook.SheetNames[0]);
-
-            sqlOutputEditor.setValue(`-- File loaded: ${file.name}\n-- Sheets: ${workbook.SheetNames.join(', ')}\n-- Rows: ${loadedData.length}\n-- Select columns above and click 'Generate SQL' to create script.`);
+            showToast(`Loaded ${file.name} (${loadedData.length} rows)`, 'success');
         };
         reader.readAsArrayBuffer(file);
     }
@@ -1238,7 +1581,7 @@ require(['vs/editor/editor.main'], function () {
     sheetSelector.addEventListener('change', (e) => {
         if (currentWorkbook) {
             loadSheetData(e.target.value);
-            sqlOutputEditor.setValue(`-- Switched to sheet: ${e.target.value}\n-- Rows: ${loadedData.length}\n-- Select columns above and click 'Generate SQL' to create script.`);
+            showToast(`Switched to sheet: ${e.target.value}`, 'info');
         }
     });
 
@@ -1247,49 +1590,76 @@ require(['vs/editor/editor.main'], function () {
         const worksheet = currentWorkbook.Sheets[sheetName];
         loadedData = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: null });
         selectedColumnsSql.clear();
+        typeOverridesSql = {};
         renderDataPreview('sql', loadedData);
+        triggerAutoGenerate('sql');
     }
 
-    // Re-render preview on option toggles
-    const headerRowCb = document.getElementById('header-row');
-    if (headerRowCb) {
-        headerRowCb.addEventListener('change', () => {
-            if (loadedData) renderDataPreview('sql', loadedData);
-        });
-    }
-    const sqlSanitizeCb = document.getElementById('sql-sanitize-headers');
-    if (sqlSanitizeCb) {
-        sqlSanitizeCb.addEventListener('change', () => {
-            if (loadedData) renderDataPreview('sql', loadedData);
-        });
-    }
+    // Load Sample Sheet for SQL Generator
+    document.getElementById('sql-sample-btn')?.addEventListener('click', () => {
+        loadedData = [
+            ["EmployeeID", "Full.Name", "Department", "HireDate", "AnnualSalary", "IsActive", "EmployeeGUID", "ZipCode"],
+            [1001, "Aarav Sharma", "Platform Engineering", "2022-03-15", 115000.50, true, "a1b2c3d4-e5f6-4a5b-8c9d-0e1f2a3b4c5d", "07030"],
+            [1002, "Maya Thapa", "Data Science & AI", "2023-07-01", 128500.00, true, "b2c3d4e5-f6a7-4b5c-9d0e-1f2a3b4c5d6e", "02138"],
+            [1003, "Liam O'Connor", "Security Operations", "2021-11-20", 108250.75, false, "c3d4e5f6-a7b8-4c5d-0e1f-2a3b4c5d6e7f", "94107"],
+            [1004, "Sophia Chen", "Database Architecture", "2020-01-10", 142000.00, true, "d4e5f6a7-b8c9-4d5e-1f2a-3b4c5d6e7f8a", "10001"],
+            [1005, "Noah Patel", "Cloud Infrastructure", "2024-02-28", 98500.25, true, "e5f6a7b8-c9d0-4e5f-2a3b-4c5d6e7f8a9b", "08540"]
+        ];
+        const dropText = dropZone.querySelector('.drop-text p');
+        if (dropText) dropText.innerText = `⚡ Loaded Sample: Employees_Directory.xlsx (5 rows)`;
+        selectedColumnsSql.clear();
+        typeOverridesSql = {};
+        const sqlSec = document.getElementById('sql-preview-section');
+        if (sqlSec) sqlSec.dataset.userExpanded = 'true';
+        renderDataPreview('sql', loadedData);
+        runSqlGeneration();
+        showToast('Loaded sample Employee dataset & generated SQL!', 'success');
+    });
 
-    generateBtn.addEventListener('click', () => {
+    ['header-row', 'sql-sanitize-headers', 'sql-include-drop', 'table-name'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) {
+            el.addEventListener(el.type === 'text' ? 'input' : 'change', () => {
+                if (loadedData) {
+                    if (id === 'header-row' || id === 'sql-sanitize-headers') {
+                        renderDataPreview('sql', loadedData);
+                    }
+                    triggerAutoGenerate('sql');
+                }
+            });
+        }
+    });
+
+    function runSqlGeneration() {
         if (!loadedData || loadedData.length === 0) {
-            sqlOutputEditor.setValue("-- No data loaded. Please upload a file first.");
+            sqlOutputEditor.setValue("-- No data loaded. Please upload a file or click '⚡ Load Sample Sheet'.");
             return;
         }
-
         const tableName = document.getElementById('table-name').value || "#TempTable";
         const hasHeader = document.getElementById('header-row').checked;
-        const sanitizeHeaders = document.getElementById('sql-sanitize-headers') ? document.getElementById('sql-sanitize-headers').checked : false;
+        const sanitizeHeaders = document.getElementById('sql-sanitize-headers')?.checked || false;
+        const includeDrop = document.getElementById('sql-include-drop')?.checked ?? true;
 
         try {
-            const sql = generateSQL(loadedData, tableName, hasHeader, sanitizeHeaders);
+            const sql = generateSQL(loadedData, tableName, hasHeader, sanitizeHeaders, includeDrop);
             sqlOutputEditor.setValue(sql);
         } catch (err) {
             sqlOutputEditor.setValue(`-- Error generating SQL:\n-- ${err.message}`);
         }
+    }
+
+    generateBtn.addEventListener('click', () => {
+        runSqlGeneration();
+        if (loadedData) showToast('Generated T-SQL Script!', 'success');
     });
 
-    function generateSQL(data, tableName, hasHeader, sanitizeHeaders = false) {
+    function generateSQL(data, tableName, hasHeader, sanitizeHeaders = false, includeDrop = true) {
         if (data.length === 0) return "-- Empty data";
 
         let allHeaders = extractHeaders(data, hasHeader, sanitizeHeaders);
         let allRows = hasHeader ? data.slice(1) : data;
 
         if (allRows.length === 0) return `-- No data rows found in ${tableName}`;
-
         if (selectedColumnsSql.size === 0) {
             return `-- No columns selected. Please select at least one column from the preview above.`;
         }
@@ -1298,10 +1668,15 @@ require(['vs/editor/editor.main'], function () {
         const headers = selectedIndices.map(i => allHeaders[i]);
         const rows = allRows.map(row => selectedIndices.map(i => (row ? row[i] : null)));
 
-        // Validate data and infer SQL column schema using SqlSchemaInferrer
-        const colTypes = SqlSchemaInferrer.inferColumns(headers, rows);
+        const inferred = SqlSchemaInferrer.inferColumns(headers, rows);
+        const colTypes = inferred.map((c, idx) => {
+            const origColIdx = selectedIndices[idx];
+            return {
+                ...c,
+                type: typeOverridesSql[origColIdx] || c.type
+            };
+        });
 
-        // 1. CREATE TABLE
         let script = `-- =============================================\n`;
         script += `-- Table: ${tableName}\n`;
         script += `-- Total Rows: ${rows.length}\n`;
@@ -1311,12 +1686,18 @@ require(['vs/editor/editor.main'], function () {
         });
         script += `-- =============================================\n\n`;
 
-        script += `IF OBJECT_ID('tempdb..${tableName}') IS NOT NULL DROP TABLE ${tableName};\n\n`;
+        if (includeDrop) {
+            if (tableName.startsWith('#')) {
+                script += `IF OBJECT_ID('tempdb..${tableName}') IS NOT NULL DROP TABLE ${tableName};\n\n`;
+            } else {
+                script += `IF OBJECT_ID('${tableName}', 'U') IS NOT NULL DROP TABLE ${tableName};\n\n`;
+            }
+        }
+
         script += `CREATE TABLE ${tableName} (\n`;
         script += colTypes.map(c => `    [${c.header}] ${c.type}${c.isNullable ? ' NULL' : ' NOT NULL'}`).join(',\n');
         script += `\n);\n\n`;
 
-        // 2. INSERT Data (batched every 1000 rows)
         const BATCH_SIZE = 1000;
         for (let i = 0; i < rows.length; i += BATCH_SIZE) {
             const batch = rows.slice(i, i + BATCH_SIZE);
@@ -1334,17 +1715,15 @@ require(['vs/editor/editor.main'], function () {
             script += `;\n\n`;
         }
 
-        script += `-- Successfully inserted ${rows.length} rows.\n`;
+        script += `-- Verify inserted rows (${rows.length} total):\n`;
         script += `SELECT * FROM ${tableName};\n`;
 
         return script;
     }
 
-    // --- Control Buttons ---
     document.getElementById('sql-copy-btn').addEventListener('click', () => {
         const value = sqlOutputEditor.getValue();
-        navigator.clipboard.writeText(value);
-        // Feedback could be added here
+        navigator.clipboard.writeText(value).then(() => showToast('SQL script copied to clipboard!', 'success'));
     });
 
     document.getElementById('sql-download-btn').addEventListener('click', () => {
@@ -1358,11 +1737,14 @@ require(['vs/editor/editor.main'], function () {
         a.click();
         document.body.removeChild(a);
         window.URL.revokeObjectURL(url);
+        showToast('Downloaded insert_script.sql', 'success');
     });
 
-    // --- Sheet to JSON & SSMS Script (View 4) ---
+    // =========================================================================
+    // 6. SHEET TO JSON & SSMS OPENJSON SCRIPT (View 4)
+    // =========================================================================
     const jsonOutputEditor = monaco.editor.create(document.getElementById('json-output'), {
-        value: "-- Upload a sheet to generate JSON or SSMS OPENJSON script",
+        value: "-- Upload a sheet or click '⚡ Load Sample Sheet' to generate JSON or SSMS OPENJSON script",
         language: "sql",
         theme: 'vs-dark',
         automaticLayout: false,
@@ -1383,35 +1765,22 @@ require(['vs/editor/editor.main'], function () {
     let jsonCurrentWorkbook = null;
 
     jsonDropZone.addEventListener('click', () => jsonFileInput.click());
-
-    jsonDropZone.addEventListener('dragover', (e) => {
-        e.preventDefault();
-        jsonDropZone.classList.add('drag-over');
-    });
-
-    jsonDropZone.addEventListener('dragleave', () => {
-        jsonDropZone.classList.remove('drag-over');
-    });
-
+    jsonDropZone.addEventListener('dragover', (e) => { e.preventDefault(); jsonDropZone.classList.add('drag-over'); });
+    jsonDropZone.addEventListener('dragleave', () => jsonDropZone.classList.remove('drag-over'));
     jsonDropZone.addEventListener('drop', (e) => {
         e.preventDefault();
         jsonDropZone.classList.remove('drag-over');
-        if (e.dataTransfer.files.length) {
-            handleJsonFile(e.dataTransfer.files[0]);
-        }
+        if (e.dataTransfer.files.length) handleJsonFile(e.dataTransfer.files[0]);
     });
-
     jsonFileInput.addEventListener('change', (e) => {
-        if (e.target.files.length) {
-            handleJsonFile(e.target.files[0]);
-        }
+        if (e.target.files.length) handleJsonFile(e.target.files[0]);
     });
 
     function handleJsonFile(file) {
         const dropText = jsonDropZone.querySelector('.drop-text p');
-        dropText.innerText = `Loaded: ${file.name}`;
+        dropText.innerText = `✅ Loaded: ${file.name}`;
         const jsonSec = document.getElementById('json-preview-section');
-        if (jsonSec) jsonSec.dataset.userExpanded = '';
+        if (jsonSec) jsonSec.dataset.userExpanded = 'true';
 
         const reader = new FileReader();
         reader.onload = (e) => {
@@ -1433,7 +1802,7 @@ require(['vs/editor/editor.main'], function () {
             }
 
             loadJsonSheetData(workbook.SheetNames[0]);
-            jsonOutputEditor.setValue(`-- File loaded: ${file.name}\n-- Sheets: ${workbook.SheetNames.join(', ')}\n-- Rows: ${jsonLoadedData.length}\n-- Select columns above and click 'Generate' to create JSON/SSMS script.`);
+            showToast(`Loaded ${file.name} for JSON/OPENJSON`, 'success');
         };
         reader.readAsArrayBuffer(file);
     }
@@ -1441,7 +1810,7 @@ require(['vs/editor/editor.main'], function () {
     jsonSheetSelector.addEventListener('change', (e) => {
         if (jsonCurrentWorkbook) {
             loadJsonSheetData(e.target.value);
-            jsonOutputEditor.setValue(`-- Switched to sheet: ${e.target.value}\n-- Rows: ${jsonLoadedData.length}\n-- Select columns above and click 'Generate' to create JSON/SSMS script.`);
+            showToast(`Switched to sheet: ${e.target.value}`, 'info');
         }
     });
 
@@ -1450,32 +1819,53 @@ require(['vs/editor/editor.main'], function () {
         const worksheet = jsonCurrentWorkbook.Sheets[sheetName];
         jsonLoadedData = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: null });
         selectedColumnsJson.clear();
+        typeOverridesJson = {};
         renderDataPreview('json', jsonLoadedData);
+        triggerAutoGenerate('json');
     }
 
-    // Re-render JSON preview on option toggles
-    const jsonHeaderRowCb = document.getElementById('json-header-row');
-    if (jsonHeaderRowCb) {
-        jsonHeaderRowCb.addEventListener('change', () => {
-            if (jsonLoadedData) renderDataPreview('json', jsonLoadedData);
-        });
-    }
-    const jsonSanitizeCb = document.getElementById('json-sanitize-headers');
-    if (jsonSanitizeCb) {
-        jsonSanitizeCb.addEventListener('change', () => {
-            if (jsonLoadedData) renderDataPreview('json', jsonLoadedData);
-        });
-    }
+    // Sample Sheet for JSON / SSMS OPENJSON
+    document.getElementById('json-sample-btn')?.addEventListener('click', () => {
+        jsonLoadedData = [
+            ["Order.ID", "Customer.Email", "OrderDate", "Order.Total", "IsPriority", "Tracking.Code"],
+            [5001, "alex.rivera@example.com", "2025-02-10", 249.99, true, "0094812"],
+            [5002, "priya.nair@example.com", "2025-02-11", 1049.50, true, "0094813"],
+            [5003, "marcus.vance@example.com", "2025-02-12", 84.00, false, "0094814"],
+            [5004, "elena.rostova@example.com", "2025-02-14", 530.75, true, "0094815"]
+        ];
+        const dropText = jsonDropZone.querySelector('.drop-text p');
+        if (dropText) dropText.innerText = `⚡ Loaded Sample: ECommerce_Orders.xlsx (4 rows with dot headers)`;
+        selectedColumnsJson.clear();
+        typeOverridesJson = {};
+        const jsonSec = document.getElementById('json-preview-section');
+        if (jsonSec) jsonSec.dataset.userExpanded = 'true';
+        renderDataPreview('json', jsonLoadedData);
+        runJsonGeneration();
+        showToast('Loaded sample Orders sheet & generated SSMS OPENJSON!', 'success');
+    });
 
-    jsonGenerateBtn.addEventListener('click', () => {
+    ['json-header-row', 'json-sanitize-headers', 'json-output-mode', 'json-prettify', 'json-table-name'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) {
+            el.addEventListener(el.type === 'text' ? 'input' : 'change', () => {
+                if (jsonLoadedData) {
+                    if (id === 'json-header-row' || id === 'json-sanitize-headers') {
+                        renderDataPreview('json', jsonLoadedData);
+                    }
+                    triggerAutoGenerate('json');
+                }
+            });
+        }
+    });
+
+    function runJsonGeneration() {
         if (!jsonLoadedData || jsonLoadedData.length === 0) {
-            jsonOutputEditor.setValue("-- No data loaded. Please upload a file first.");
+            jsonOutputEditor.setValue("-- No data loaded. Please upload a file or click '⚡ Load Sample Sheet'.");
             return;
         }
-
         const tableName = document.getElementById('json-table-name').value || "#TempTable";
         const hasHeader = document.getElementById('json-header-row').checked;
-        const sanitizeHeaders = document.getElementById('json-sanitize-headers') ? document.getElementById('json-sanitize-headers').checked : false;
+        const sanitizeHeaders = document.getElementById('json-sanitize-headers')?.checked || false;
         const outputMode = document.getElementById('json-output-mode').value;
         const prettify = document.getElementById('json-prettify').checked;
 
@@ -1485,6 +1875,11 @@ require(['vs/editor/editor.main'], function () {
         } catch (err) {
             jsonOutputEditor.setValue(`-- Error generating script:\n-- ${err.message}`);
         }
+    }
+
+    jsonGenerateBtn.addEventListener('click', () => {
+        runJsonGeneration();
+        if (jsonLoadedData) showToast('Generated output script!', 'success');
     });
 
     function generateJsonScript(data, tableName, hasHeader, outputMode, prettify, sanitizeHeaders = false) {
@@ -1494,7 +1889,6 @@ require(['vs/editor/editor.main'], function () {
         let allRows = hasHeader ? data.slice(1) : data;
 
         if (allRows.length === 0) return `-- No data rows found`;
-
         if (selectedColumnsJson.size === 0) {
             return `-- No columns selected. Please select at least one column from the preview above.`;
         }
@@ -1503,7 +1897,6 @@ require(['vs/editor/editor.main'], function () {
         const headers = selectedIndices.map(i => allHeaders[i]);
         const rows = allRows.map(row => selectedIndices.map(i => (row ? row[i] : null)));
 
-        // Transform rows to JSON objects array using selected columns
         const objects = rows.map(row => {
             let obj = {};
             headers.forEach((h, colIndex) => {
@@ -1525,14 +1918,18 @@ require(['vs/editor/editor.main'], function () {
             return `db.${cleanTable}.insertMany(\n${JSON.stringify(objects, null, prettify ? 2 : 0)}\n);`;
         }
 
-        // SSMS OPENJSON Script mode
         monaco.editor.setModelLanguage(jsonOutputEditor.getModel(), 'sql');
 
-        // Type Inference for WITH clause schema using SqlSchemaInferrer
-        const colTypes = SqlSchemaInferrer.inferColumns(headers, rows);
+        const inferred = SqlSchemaInferrer.inferColumns(headers, rows);
+        const colTypes = inferred.map((c, idx) => {
+            const origColIdx = selectedIndices[idx];
+            return {
+                ...c,
+                type: typeOverridesJson[origColIdx] || c.type
+            };
+        });
 
         const jsonPayload = JSON.stringify(objects, null, prettify ? 2 : 0);
-        // Escape single quotes inside SQL N'...' literal
         const sqlEscapedJson = jsonPayload.replace(/'/g, "''");
 
         let script = `-- =============================================\n`;
@@ -1540,7 +1937,7 @@ require(['vs/editor/editor.main'], function () {
         script += `-- Total Rows: ${rows.length}\n`;
         script += `-- Validated Schema (${headers.length} selected columns):\n`;
         colTypes.forEach(c => {
-            script += `--   [${c.header}] -> ${c.type}\n`;
+            script += `--   [${c.header}] -> ${c.type} (Path: ${SqlSchemaInferrer.formatJsonPath(c.header)})\n`;
         });
         script += `-- =============================================\n\n`;
 
@@ -1562,7 +1959,7 @@ require(['vs/editor/editor.main'], function () {
 
     document.getElementById('json-copy-btn').addEventListener('click', () => {
         const value = jsonOutputEditor.getValue();
-        navigator.clipboard.writeText(value);
+        navigator.clipboard.writeText(value).then(() => showToast('Copied script to clipboard!', 'success'));
     });
 
     document.getElementById('json-download-btn').addEventListener('click', () => {
@@ -1574,18 +1971,22 @@ require(['vs/editor/editor.main'], function () {
         const url = window.URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
-        a.download = `script.${ext}`;
+        a.download = `openjson_script.${ext}`;
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
         window.URL.revokeObjectURL(url);
+        showToast(`Downloaded openjson_script.${ext}`, 'success');
     });
 
-    // --- Sheet to Excel (View 5) ---
+    // =========================================================================
+    // 7. DATA TO EXCEL CONVERTER + LIVE TABLE PREVIEW (View 5)
+    // =========================================================================
     const excelInputEditor = monaco.editor.create(document.getElementById('excel-input'), {
         value: JSON.stringify([
-            { "ID": 101, "FullName": "John Doe", "Department": "Engineering", "Salary": 85000 },
-            { "ID": 102, "FullName": "Jane Smith", "Department": "Marketing", "Salary": 78000 }
+            { "ID": 101, "FullName": "John Doe", "Department": "Engineering", "Salary": 85000, "Active": true },
+            { "ID": 102, "FullName": "Jane Smith", "Department": "Marketing", "Salary": 78000, "Active": true },
+            { "ID": 103, "FullName": "Carlos Mendez", "Department": "Database Admin", "Salary": 112000, "Active": false }
         ], null, 2),
         language: "json",
         theme: 'vs-dark',
@@ -1597,50 +1998,156 @@ require(['vs/editor/editor.main'], function () {
         fontFamily: "'JetBrains Mono', 'Courier New', monospace"
     });
 
+    function parseExcelInputToWorksheet(rawText) {
+        if (!rawText || !rawText.trim()) return null;
+        let worksheet = null;
+        let parsedData = null;
+
+        try {
+            parsedData = JSON.parse(rawText);
+        } catch (jsonErr) {
+            const csvWb = XLSX.read(rawText, { type: 'string' });
+            const firstSheetName = csvWb.SheetNames[0];
+            worksheet = csvWb.Sheets[firstSheetName];
+        }
+
+        if (!worksheet && parsedData) {
+            if (Array.isArray(parsedData)) {
+                worksheet = XLSX.utils.json_to_sheet(parsedData);
+            } else if (typeof parsedData === 'object') {
+                worksheet = XLSX.utils.json_to_sheet([parsedData]);
+            }
+        }
+        return worksheet;
+    }
+
+    function updateExcelLivePreview() {
+        const table = document.getElementById('excel-live-table');
+        const badge = document.getElementById('excel-row-count-badge');
+        if (!table) return;
+
+        const value = excelInputEditor.getValue().trim();
+        if (!value) {
+            table.innerHTML = '<tbody><tr><td style="padding:16px; color:var(--text-secondary);">Paste JSON array or CSV on the left to preview rows...</td></tr></tbody>';
+            if (badge) { badge.innerText = '0 rows'; badge.className = 'status-pill valid'; }
+            return;
+        }
+
+        try {
+            const ws = parseExcelInputToWorksheet(value);
+            if (!ws) throw new Error('Unrecognized data format');
+            const matrix = XLSX.utils.sheet_to_json(ws, { header: 1, defval: '' });
+            if (matrix.length === 0) {
+                table.innerHTML = '';
+                return;
+            }
+            const headers = matrix[0];
+            const rows = matrix.slice(1);
+
+            if (badge) {
+                badge.innerText = `${rows.length} row${rows.length === 1 ? '' : 's'} · ${headers.length} cols`;
+                badge.className = 'status-pill valid';
+            }
+
+            let html = '<thead><tr><th class="row-num-header">#</th>';
+            headers.forEach(h => {
+                html += `<th>${escapeHtml(h)}</th>`;
+            });
+            html += '</tr></thead><tbody>';
+
+            rows.slice(0, 100).forEach((r, idx) => {
+                html += `<tr><td class="row-num-cell">${idx + 1}</td>`;
+                headers.forEach((_, cIdx) => {
+                    const cell = r[cIdx] !== undefined && r[cIdx] !== null ? r[cIdx] : '';
+                    html += `<td title="${escapeHtml(cell)}">${escapeHtml(cell)}</td>`;
+                });
+                html += '</tr>';
+            });
+            html += '</tbody>';
+            table.innerHTML = html;
+        } catch (err) {
+            if (badge) {
+                badge.innerText = 'Parse Error';
+                badge.className = 'status-pill invalid';
+            }
+        }
+    }
+
+    updateExcelLivePreview();
+    excelInputEditor.onDidChangeModelContent(() => {
+        updateExcelLivePreview();
+    });
+
+    document.getElementById('excel-sample-btn')?.addEventListener('click', () => {
+        excelInputEditor.setValue(JSON.stringify([
+            { "ServerName": "SQL-PROD-01", "Database": "CustomerCore", "SizeGB": 428.5, "Status": "ONLINE", "LastBackup": "2025-02-20 03:00:00" },
+            { "ServerName": "SQL-PROD-02", "Database": "AnalyticsDW", "SizeGB": 1840.0, "Status": "ONLINE", "LastBackup": "2025-02-20 01:30:00" },
+            { "ServerName": "SQL-STG-01", "Database": "BillingStaging", "SizeGB": 64.2, "Status": "RESTORING", "LastBackup": "2025-02-19 22:00:00" },
+            { "ServerName": "SQL-DEV-01", "Database": "SandboxDB", "SizeGB": 12.8, "Status": "ONLINE", "LastBackup": "2025-02-18 18:00:00" }
+        ], null, 2));
+        showToast('Loaded sample database inventory dataset', 'success');
+    });
+
+    const excelUploadBtn = document.getElementById('excel-upload-btn');
+    const excelFileInput = document.getElementById('excel-file-input');
+    if (excelUploadBtn && excelFileInput) {
+        excelUploadBtn.addEventListener('click', () => excelFileInput.click());
+        excelFileInput.addEventListener('change', (e) => {
+            if (!e.target.files.length) return;
+            const file = e.target.files[0];
+            const reader = new FileReader();
+            reader.onload = (ev) => {
+                excelInputEditor.setValue(ev.target.result);
+                showToast(`Loaded ${file.name}`, 'success');
+            };
+            reader.readAsText(file);
+        });
+    }
+
     document.getElementById('export-excel-btn').addEventListener('click', () => {
         const value = excelInputEditor.getValue().trim();
         if (!value) return;
-
         const fileName = document.getElementById('excel-file-name').value.trim() || 'data_export';
         const sheetName = document.getElementById('excel-sheet-name').value.trim() || 'Sheet1';
 
         try {
-            let worksheet;
-            let parsedData;
-
-            // Try parsing as JSON first
-            try {
-                parsedData = JSON.parse(value);
-            } catch (jsonErr) {
-                // If not valid JSON, treat as CSV string using SheetJS
-                const csvWb = XLSX.read(value, { type: 'string' });
-                const firstSheetName = csvWb.SheetNames[0];
-                worksheet = csvWb.Sheets[firstSheetName];
-            }
-
-            if (!worksheet && parsedData) {
-                if (Array.isArray(parsedData)) {
-                    worksheet = XLSX.utils.json_to_sheet(parsedData);
-                } else if (typeof parsedData === 'object') {
-                    worksheet = XLSX.utils.json_to_sheet([parsedData]);
-                } else {
-                    throw new Error("Invalid JSON structure. Must be an array of objects or an object.");
-                }
-            }
-
-            if (!worksheet) {
-                throw new Error("Could not parse input data into an Excel sheet.");
-            }
-
+            const worksheet = parseExcelInputToWorksheet(value);
+            if (!worksheet) throw new Error("Could not parse input data into an Excel sheet.");
             const wb = XLSX.utils.book_new();
             XLSX.utils.book_append_sheet(wb, worksheet, sheetName);
             XLSX.writeFile(wb, `${fileName}.xlsx`);
+            showToast(`Exported ${fileName}.xlsx!`, 'success');
         } catch (err) {
-            alert(`Error exporting to Excel:\n${err.message}`);
+            showToast(`Export error: ${err.message}`, 'error');
         }
     });
 
-    // --- HTML Renderer & Preview (View 6) ---
+    document.getElementById('export-csv-btn')?.addEventListener('click', () => {
+        const value = excelInputEditor.getValue().trim();
+        if (!value) return;
+        const fileName = document.getElementById('excel-file-name').value.trim() || 'data_export';
+        try {
+            const worksheet = parseExcelInputToWorksheet(value);
+            if (!worksheet) throw new Error("Could not parse input data.");
+            const csvOutput = XLSX.utils.sheet_to_csv(worksheet);
+            const blob = new Blob([csvOutput], { type: 'text/csv;charset=utf-8;' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `${fileName}.csv`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+            showToast(`Exported ${fileName}.csv!`, 'success');
+        } catch (err) {
+            showToast(`CSV export error: ${err.message}`, 'error');
+        }
+    });
+
+    // =========================================================================
+    // 8. HTML RENDERER & LIVE PREVIEW (View 6)
+    // =========================================================================
     const defaultHtmlContent = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -1659,31 +2166,39 @@ require(['vs/editor/editor.main'], function () {
             background: #ffffff;
             border-radius: 12px;
             padding: 24px;
-            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -2px rgba(0, 0, 0, 0.1);
-            max-width: 500px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+            max-width: 520px;
             margin: 0 auto;
+            border: 1px solid #e2e8f0;
+        }
+        .badge {
+            display: inline-block;
+            background: #ede9fe;
+            color: #6d28d9;
+            padding: 4px 10px;
+            border-radius: 999px;
+            font-size: 12px;
+            font-weight: 600;
+            margin-bottom: 8px;
         }
         .btn {
-            background-color: #3b82f6;
+            background: linear-gradient(135deg, #3b82f6 0%, #8b5cf6 100%);
             color: white;
             border: none;
             padding: 10px 18px;
             border-radius: 6px;
             font-size: 14px;
-            font-weight: 500;
+            font-weight: 600;
             cursor: pointer;
-            transition: background 0.2s;
-        }
-        .btn:hover {
-            background-color: #2563eb;
         }
     </style>
 </head>
 <body>
     <div class="card">
-        <h2>⚡ Live HTML Preview</h2>
-        <p>Type or paste your HTML, CSS, and JavaScript here to see real-time updates.</p>
-        <button class="btn" onclick="alert('Hello from HTML Renderer!')">Click Me</button>
+        <span class="badge">SQLDevTool Sandbox</span>
+        <h2>⚡ Live HTML & UI Preview</h2>
+        <p>Edit HTML, CSS, or JavaScript on the left to see instant updates in this sandboxed preview.</p>
+        <button class="btn" onclick="alert('Hello from SQLDevTool HTML Renderer!')">Test Interaction</button>
     </div>
 </body>
 </html>`;
@@ -1705,29 +2220,27 @@ require(['vs/editor/editor.main'], function () {
     let renderTimeout = null;
 
     function renderHtmlPreview() {
-        const content = htmlInputEditor.getValue();
-        htmlPreviewFrame.srcdoc = content;
+        htmlPreviewFrame.srcdoc = htmlInputEditor.getValue();
     }
 
-    // Initial render
     renderHtmlPreview();
 
-    // Auto-update with debounce
     htmlInputEditor.onDidChangeModelContent(() => {
         if (htmlAutoUpdateCb && htmlAutoUpdateCb.checked) {
             if (renderTimeout) clearTimeout(renderTimeout);
-            renderTimeout = setTimeout(() => {
-                renderHtmlPreview();
-            }, 300);
+            renderTimeout = setTimeout(renderHtmlPreview, 300);
         }
     });
 
-    // Helper: Prettify HTML Code
+    document.getElementById('html-sample-btn')?.addEventListener('click', () => {
+        htmlInputEditor.setValue(defaultHtmlContent);
+        renderHtmlPreview();
+        showToast('Restored sample HTML card template', 'success');
+    });
+
     function prettifyHtmlCode(html) {
         if (!html || !html.trim()) return '';
-
         const tokenRegex = /(<!--[\s\S]*?-->|<!DOCTYPE[^>]*>|<style[\s\S]*?<\/style>|<script[\s\S]*?<\/script>|<\/[a-zA-Z0-9-]+>|<[a-zA-Z0-9-]+\b[^>]*\/>|<[a-zA-Z0-9-]+\b[^>]*>|[^<]+)/gi;
-
         const clean = html.replace(/>\s+</g, '><').trim();
         const tokens = clean.match(tokenRegex) || [clean];
         const voidTags = new Set(['area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'param', 'source', 'track', 'wbr']);
@@ -1739,7 +2252,6 @@ require(['vs/editor/editor.main'], function () {
         tokens.forEach(token => {
             const str = token.trim();
             if (!str) return;
-
             if (str.startsWith('</')) {
                 indentLevel = Math.max(0, indentLevel - 1);
                 formatted += (formatted ? '\n' : '') + tab.repeat(indentLevel) + str;
@@ -1749,53 +2261,39 @@ require(['vs/editor/editor.main'], function () {
                 const tagNameMatch = str.match(/^<([a-zA-Z0-9-]+)/);
                 const tagName = tagNameMatch ? tagNameMatch[1].toLowerCase() : '';
                 const isVoid = voidTags.has(tagName) || str.endsWith('/>') || str.startsWith('<!') || str.startsWith('<!--');
-
                 formatted += (formatted ? '\n' : '') + tab.repeat(indentLevel) + str;
-                if (!isVoid) {
-                    indentLevel++;
-                }
+                if (!isVoid) indentLevel++;
             } else {
                 formatted += (formatted ? '\n' : '') + tab.repeat(indentLevel) + str;
             }
         });
-
         return formatted;
     }
 
-    // Helper: Minify / Inline HTML Code
     function inlineHtmlCode(html) {
         if (!html || !html.trim()) return '';
-        return html
-            .replace(/\r?\n|\r/g, ' ')
-            .replace(/>\s+</g, '><')
-            .replace(/\s+/g, ' ')
-            .trim();
+        return html.replace(/\r?\n|\r/g, ' ').replace(/>\s+</g, '><').replace(/\s+/g, ' ').trim();
     }
 
-    const prettifyBtn = document.getElementById('html-prettify-btn');
-    if (prettifyBtn) {
-        prettifyBtn.addEventListener('click', () => {
-            const value = htmlInputEditor.getValue();
-            if (!value.trim()) return;
-            const formatted = prettifyHtmlCode(value);
-            htmlInputEditor.setValue(formatted);
-            renderHtmlPreview();
-        });
-    }
+    document.getElementById('html-prettify-btn')?.addEventListener('click', () => {
+        const val = htmlInputEditor.getValue();
+        if (!val.trim()) return;
+        htmlInputEditor.setValue(prettifyHtmlCode(val));
+        renderHtmlPreview();
+        showToast('Prettified HTML code', 'success');
+    });
 
-    const inlineBtn = document.getElementById('html-inline-btn');
-    if (inlineBtn) {
-        inlineBtn.addEventListener('click', () => {
-            const value = htmlInputEditor.getValue();
-            if (!value.trim()) return;
-            const inlined = inlineHtmlCode(value);
-            htmlInputEditor.setValue(inlined);
-            renderHtmlPreview();
-        });
-    }
+    document.getElementById('html-inline-btn')?.addEventListener('click', () => {
+        const val = htmlInputEditor.getValue();
+        if (!val.trim()) return;
+        htmlInputEditor.setValue(inlineHtmlCode(val));
+        renderHtmlPreview();
+        showToast('Minified HTML to single line', 'success');
+    });
 
     document.getElementById('html-render-btn').addEventListener('click', () => {
         renderHtmlPreview();
+        showToast('Rendered HTML preview', 'info');
     });
 
     document.getElementById('html-open-tab-btn').addEventListener('click', () => {
@@ -1806,12 +2304,8 @@ require(['vs/editor/editor.main'], function () {
     });
 
     document.getElementById('html-copy-btn').addEventListener('click', () => {
-        const value = htmlInputEditor.getValue();
-        navigator.clipboard.writeText(value).then(() => {
-            const btn = document.getElementById('html-copy-btn');
-            const originalText = btn.innerText;
-            btn.innerText = 'Copied!';
-            setTimeout(() => btn.innerText = originalText, 2000);
+        navigator.clipboard.writeText(htmlInputEditor.getValue()).then(() => {
+            showToast('HTML copied to clipboard!', 'success');
         });
     });
 
@@ -1827,9 +2321,79 @@ require(['vs/editor/editor.main'], function () {
         a.click();
         document.body.removeChild(a);
         window.URL.revokeObjectURL(url);
+        showToast('Downloaded preview.html', 'success');
     });
 
-    // --- Draggable Splitter / Resizer Logic ---
+    // =========================================================================
+    // 9. NAVIGATION, EXPANDABLE SIDEBAR, RESIZERS & THEME
+    // =========================================================================
+    let activeViewId = 'view-diff';
+
+    function layoutActiveEditors() {
+        setTimeout(() => {
+            if (activeViewId === 'view-diff') diffEditor.layout();
+            else if (activeViewId === 'view-format') { formatInputEditor.layout(); formatOutputEditor.layout(); }
+            else if (activeViewId === 'view-sql-gen') sqlOutputEditor.layout();
+            else if (activeViewId === 'view-json-gen') jsonOutputEditor.layout();
+            else if (activeViewId === 'view-excel-gen') excelInputEditor.layout();
+            else if (activeViewId === 'view-html-render') htmlInputEditor.layout();
+        }, 35);
+    }
+
+    const sidebar = document.getElementById('sidebar');
+    const sidebarToggle = document.getElementById('sidebar-toggle');
+    sidebarToggle?.addEventListener('click', () => {
+        sidebar.classList.toggle('expanded');
+        setTimeout(layoutActiveEditors, 240);
+    });
+
+    const navItems = document.querySelectorAll('.nav-item[data-target]');
+    const views = document.querySelectorAll('.view');
+
+    function switchToView(targetId) {
+        activeViewId = targetId;
+        navItems.forEach(n => n.classList.toggle('active', n.getAttribute('data-target') === targetId));
+        views.forEach(v => v.classList.toggle('active', v.id === targetId));
+        layoutActiveEditors();
+    }
+
+    navItems.forEach(item => {
+        item.addEventListener('click', () => {
+            const targetId = item.getAttribute('data-target');
+            if (targetId) switchToView(targetId);
+        });
+    });
+
+    window.addEventListener('resize', layoutActiveEditors);
+
+    // Theme Toggle
+    const themeToggle = document.getElementById('theme-toggle');
+    let isDark = true;
+
+    themeToggle.addEventListener('click', () => {
+        isDark = !isDark;
+        if (isDark) {
+            monaco.editor.setTheme('vs-dark');
+            document.documentElement.style.setProperty('--bg-primary', '#0f1115');
+            document.documentElement.style.setProperty('--bg-secondary', '#161b22');
+            document.documentElement.style.setProperty('--bg-tertiary', '#21262d');
+            document.documentElement.style.setProperty('--text-primary', '#f0f6fc');
+            document.documentElement.style.setProperty('--text-secondary', '#8b949e');
+            document.documentElement.style.setProperty('--border-color', '#30363d');
+            showToast('Switched to Dark Theme', 'info');
+        } else {
+            monaco.editor.setTheme('vs');
+            document.documentElement.style.setProperty('--bg-primary', '#ffffff');
+            document.documentElement.style.setProperty('--bg-secondary', '#f6f8fa');
+            document.documentElement.style.setProperty('--bg-tertiary', '#eaeef2');
+            document.documentElement.style.setProperty('--text-primary', '#24292f');
+            document.documentElement.style.setProperty('--text-secondary', '#57606a');
+            document.documentElement.style.setProperty('--border-color', '#d0d7de');
+            showToast('Switched to Light Theme', 'info');
+        }
+    });
+
+    // Resizers
     function makeResizable(resizerId, leftPaneId, rightPaneId, onResizeCallback) {
         const resizer = document.getElementById(resizerId);
         const leftPane = document.getElementById(leftPaneId);
@@ -1837,7 +2401,6 @@ require(['vs/editor/editor.main'], function () {
         if (!resizer || !leftPane || !rightPane) return;
 
         let isResizing = false;
-
         resizer.addEventListener('mousedown', (e) => {
             isResizing = true;
             resizer.classList.add('resizing');
@@ -1849,15 +2412,12 @@ require(['vs/editor/editor.main'], function () {
 
         document.addEventListener('mousemove', (e) => {
             if (!isResizing) return;
-
             const container = resizer.parentElement;
             if (!container) return;
             const containerRect = container.getBoundingClientRect();
             const mouseX = e.clientX - containerRect.left;
-
-            const minPx = 100;
-            const maxPx = containerRect.width - 100;
-
+            const minPx = 120;
+            const maxPx = containerRect.width - 120;
             const leftWidth = Math.max(minPx, Math.min(mouseX, maxPx));
             const leftPercent = (leftWidth / containerRect.width) * 100;
 
@@ -1865,10 +2425,7 @@ require(['vs/editor/editor.main'], function () {
             leftPane.style.width = `${leftPercent}%`;
             rightPane.style.flex = '1';
             rightPane.style.width = 'auto';
-
-            if (onResizeCallback) {
-                onResizeCallback();
-            }
+            if (onResizeCallback) onResizeCallback();
         });
 
         document.addEventListener('mouseup', () => {
@@ -1878,27 +2435,77 @@ require(['vs/editor/editor.main'], function () {
                 document.body.style.cursor = '';
                 document.body.style.userSelect = '';
                 document.body.classList.remove('is-resizing');
-
-                if (onResizeCallback) {
-                    onResizeCallback();
-                }
+                if (onResizeCallback) onResizeCallback();
             }
         });
     }
 
-    // Initialize resizer for HTML Renderer
-    makeResizable('html-resizer', 'html-input', 'html-preview-container', () => {
-        if (typeof htmlInputEditor !== 'undefined') {
-            htmlInputEditor.layout();
-        }
-    });
-
-    // Initialize resizer for Formatter
+    makeResizable('html-resizer', 'html-input', 'html-preview-container', () => htmlInputEditor.layout());
     makeResizable('format-resizer', 'format-input', 'format-output', () => {
-        if (typeof formatInputEditor !== 'undefined' && typeof formatOutputEditor !== 'undefined') {
-            formatInputEditor.layout();
-            formatOutputEditor.layout();
-        }
+        formatInputEditor.layout();
+        formatOutputEditor.layout();
+    });
+    makeResizable('excel-resizer', 'excel-input', 'excel-preview-pane', () => excelInputEditor.layout());
+
+    // Help Modal
+    const helpModal = document.getElementById('help-modal-overlay');
+    document.getElementById('shortcuts-help-btn')?.addEventListener('click', () => {
+        if (helpModal) helpModal.style.display = 'flex';
+    });
+    document.getElementById('help-modal-close')?.addEventListener('click', () => {
+        if (helpModal) helpModal.style.display = 'none';
+    });
+    helpModal?.addEventListener('click', (e) => {
+        if (e.target === helpModal) helpModal.style.display = 'none';
     });
 
+    // =========================================================================
+    // 10. GLOBAL KEYBOARD SHORTCUTS
+    // =========================================================================
+    const VIEW_KEYS = {
+        '1': 'view-diff',
+        '2': 'view-format',
+        '3': 'view-sql-gen',
+        '4': 'view-json-gen',
+        '5': 'view-excel-gen',
+        '6': 'view-html-render'
+    };
+
+    window.addEventListener('keydown', (e) => {
+        // Alt + 1..6 to switch views
+        if (e.altKey && VIEW_KEYS[e.key]) {
+            e.preventDefault();
+            switchToView(VIEW_KEYS[e.key]);
+            return;
+        }
+        // Escape closes modal
+        if (e.key === 'Escape') {
+            if (helpModal && helpModal.style.display !== 'none') {
+                helpModal.style.display = 'none';
+                return;
+            }
+        }
+        // Diff View F7 / Alt+N / Alt+P / Alt+Right / Alt+Left / Alt+M
+        if (activeViewId === 'view-diff') {
+            if (e.key === 'F7') {
+                e.preventDefault();
+                navigateDiff(e.shiftKey ? 'prev' : 'next');
+            } else if (e.altKey && e.key.toLowerCase() === 'n') {
+                e.preventDefault();
+                navigateDiff('next');
+            } else if (e.altKey && e.key.toLowerCase() === 'p') {
+                e.preventDefault();
+                navigateDiff('prev');
+            } else if (e.altKey && e.key === 'ArrowRight') {
+                e.preventDefault();
+                applyHunkAction(currentDiffIndex, 'push-right');
+            } else if (e.altKey && e.key === 'ArrowLeft') {
+                e.preventDefault();
+                applyHunkAction(currentDiffIndex, 'pull-left');
+            } else if (e.altKey && e.key.toLowerCase() === 'm') {
+                e.preventDefault();
+                applyHunkAction(currentDiffIndex, 'merge-to-right');
+            }
+        }
+    });
 });

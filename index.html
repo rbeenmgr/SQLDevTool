@@ -8,7 +8,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link
-        href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap"
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap"
         rel="stylesheet">
     <script src="https://cdn.sheetjs.com/xlsx-latest/package/dist/xlsx.full.min.js"></script>
     <link rel="stylesheet" href="style.css">
@@ -16,40 +16,61 @@
 
 <body>
     <div class="app-container">
-        <nav class="sidebar">
-            <div class="nav-item active" data-target="view-diff" title="Diff Checker">
-                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+        <!-- Expandable Sidebar -->
+        <nav id="sidebar" class="sidebar">
+            <button id="sidebar-toggle" class="sidebar-toggle-btn" title="Toggle Sidebar Labels">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                    stroke-linecap="round" stroke-linejoin="round">
+                    <line x1="3" y1="12" x2="21" y2="12"></line>
+                    <line x1="3" y1="6" x2="21" y2="6"></line>
+                    <line x1="3" y1="18" x2="21" y2="18"></line>
+                </svg>
+                <span class="nav-brand-text">SQLDevTool</span>
+            </button>
+
+            <div class="nav-divider"></div>
+
+            <div class="nav-item active" data-target="view-diff" title="Diff Checker (Alt+1)">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
                     stroke-linecap="round" stroke-linejoin="round">
                     <path
                         d="M13 3H19C19.5304 3 20.0391 3.21071 20.4142 3.58579C20.7893 3.96086 21 4.46957 21 5V11M13 3H11M13 3V11M21 11H13M21 11V19C21 19.5304 20.7893 20.0391 20.4142 20.4142C20.0391 20.7893 19.5304 21 19 21H13M13 21H11M13 21V13M5 21H11M5 21C4.46957 21 3.96086 20.7893 3.58579 20.4142C3.21071 20.0391 3 19.5304 3 19V13M11 21V13M3 13H11M3 13V5C3 4.46957 3.21071 3.96086 3.58579 3.58579C3.96086 3.21071 4.46957 3 5 3H11M11 3V13" />
                 </svg>
+                <span class="nav-label">Diff Checker</span>
+                <kbd class="nav-kbd">1</kbd>
             </div>
-            <div class="nav-item" data-target="view-format" title="Formatter">
-                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+            <div class="nav-item" data-target="view-format" title="Formatter & Unescaper (Alt+2)">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
                     stroke-linecap="round" stroke-linejoin="round">
                     <polyline points="16 18 22 12 16 6"></polyline>
                     <polyline points="8 6 2 12 8 18"></polyline>
                 </svg>
+                <span class="nav-label">Code Formatter</span>
+                <kbd class="nav-kbd">2</kbd>
             </div>
-            <div class="nav-item" data-target="view-sql-gen" title="Sheet to SQL">
-                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+            <div class="nav-item" data-target="view-sql-gen" title="Sheet to SQL Generator (Alt+3)">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
                     stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-                    <polyline points="7 10 12 15 17 10" />
-                    <line x1="12" y1="15" x2="12" y2="3" />
+                    <ellipse cx="12" cy="5" rx="9" ry="3"></ellipse>
+                    <path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"></path>
+                    <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"></path>
                 </svg>
+                <span class="nav-label">Sheet to SQL</span>
+                <kbd class="nav-kbd">3</kbd>
             </div>
-            <div class="nav-item" data-target="view-json-gen" title="Sheet to JSON (SSMS)">
-                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+            <div class="nav-item" data-target="view-json-gen" title="Sheet to JSON & SSMS OPENJSON (Alt+4)">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
                     stroke-linecap="round" stroke-linejoin="round">
                     <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
                     <polyline points="14 2 14 8 20 8"></polyline>
                     <path d="M10 12a1 1 0 0 0-1 1v1a1 1 0 0 1-1 1 1 1 0 0 1 1 1v1a1 1 0 0 0 1 1"></path>
                     <path d="M14 12a1 1 0 0 1 1 1v1a1 1 0 0 0 1 1 1 1 0 0 0-1 1v1a1 1 0 0 1-1 1"></path>
                 </svg>
+                <span class="nav-label">Sheet to JSON</span>
+                <kbd class="nav-kbd">4</kbd>
             </div>
-            <div class="nav-item" data-target="view-excel-gen" title="Sheet to Excel">
-                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+            <div class="nav-item" data-target="view-excel-gen" title="JSON/CSV to Excel Converter (Alt+5)">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
                     stroke-linecap="round" stroke-linejoin="round">
                     <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
                     <line x1="3" y1="9" x2="21" y2="9"></line>
@@ -57,18 +78,34 @@
                     <line x1="9" y1="3" x2="9" y2="21"></line>
                     <line x1="15" y1="3" x2="15" y2="21"></line>
                 </svg>
+                <span class="nav-label">Data to Excel</span>
+                <kbd class="nav-kbd">5</kbd>
             </div>
-            <div class="nav-item" data-target="view-html-render" title="HTML Renderer & Preview">
-                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+            <div class="nav-item" data-target="view-html-render" title="HTML Renderer & Preview (Alt+6)">
+                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
                     stroke-linecap="round" stroke-linejoin="round">
                     <rect x="2" y="3" width="20" height="14" rx="2" ry="2"></rect>
                     <line x1="8" y1="21" x2="16" y2="21"></line>
                     <line x1="12" y1="17" x2="12" y2="21"></line>
                 </svg>
+                <span class="nav-label">HTML Preview</span>
+                <kbd class="nav-kbd">6</kbd>
             </div>
+
             <div class="nav-spacer"></div>
-            <button id="theme-toggle" class="nav-item icon-btn" aria-label="Toggle Theme">
-                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+
+            <button id="shortcuts-help-btn" class="nav-item icon-btn" title="Keyboard Shortcuts & Help (?)">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                    stroke-linecap="round" stroke-linejoin="round">
+                    <circle cx="12" cy="12" r="10"></circle>
+                    <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"></path>
+                    <line x1="12" y1="17" x2="12.01" y2="17"></line>
+                </svg>
+                <span class="nav-label">Shortcuts & Help</span>
+            </button>
+
+            <button id="theme-toggle" class="nav-item icon-btn" aria-label="Toggle Theme" title="Toggle Dark/Light Theme">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
                     stroke-linecap="round" stroke-linejoin="round">
                     <circle cx="12" cy="12" r="5"></circle>
                     <line x1="12" y1="1" x2="12" y2="3"></line>
@@ -80,15 +117,22 @@
                     <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"></line>
                     <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"></line>
                 </svg>
+                <span class="nav-label">Switch Theme</span>
             </button>
         </nav>
 
+        <!-- VIEW 1: DIFF CHECKER -->
         <section id="view-diff" class="view active">
             <header class="app-header">
                 <div class="logo">
-                    <h1>DiffChecker</h1>
+                    <h1>Diff Checker</h1>
+                    <span class="header-subtitle">Compare & merge code blocks side-by-side</span>
                 </div>
                 <div class="controls">
+                    <button id="diff-sample-btn" class="control-item sample-btn" title="Load sample SQL comparison">
+                        ⚡ Load Sample
+                    </button>
+
                     <!-- Navigation & Diff Counter -->
                     <button id="diff-prev-btn" class="control-item icon-btn" title="Previous Difference (Shift+F7)">
                         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
@@ -102,21 +146,9 @@
                     </button>
                     <span id="diff-count-badge" class="diff-badge no-diff">0 diffs</span>
 
-                    <div style="width: 1px; height: 20px; background-color: var(--border-color); margin: 0 4px;"></div>
+                    <div class="header-divider"></div>
 
-                    <!-- Transfer All & Utility Buttons -->
-                    <button id="transfer-to-modified" class="control-item icon-btn" title="Copy All to Modified ->">
-                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                            <path d="M5 12h14"></path>
-                            <path d="M12 5l7 7-7 7"></path>
-                        </svg>
-                    </button>
-                    <button id="transfer-to-original" class="control-item icon-btn" title="<- Copy All to Original">
-                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                            <path d="M19 12H5"></path>
-                            <path d="M12 19l-7-7 7-7"></path>
-                        </svg>
-                    </button>
+                    <!-- Swap & Clear Utility Buttons -->
                     <button id="diff-swap-btn" class="control-item icon-btn" title="Swap Original & Modified Content">
                         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                             <polyline points="16 3 21 3 21 8"></polyline>
@@ -132,7 +164,7 @@
                         </svg>
                     </button>
 
-                    <div style="width: 1px; height: 20px; background-color: var(--border-color); margin: 0 4px;"></div>
+                    <div class="header-divider"></div>
 
                     <!-- View & Whitespace Toggles -->
                     <button id="diff-toggle-inline" class="control-item icon-btn" title="Toggle Split / Unified View">
@@ -149,19 +181,24 @@
                         </svg>
                     </button>
 
-                    <div style="width: 1px; height: 20px; background-color: var(--border-color); margin: 0 4px;"></div>
+                    <!-- Merge Controls Placement Selector (In-Code Default) -->
+                    <select id="diff-merge-ui-mode" class="control-item" title="Choose where Merge Action buttons appear">
+                        <option value="inline" selected>Actions: In-Code</option>
+                        <option value="middle">Actions: Middle (&lt; = &gt;)</option>
+                        <option value="both">Actions: Both</option>
+                    </select>
 
                     <select id="diff-language-selector" class="control-item">
+                        <option value="sql">SQL</option>
                         <option value="javascript">JavaScript</option>
                         <option value="typescript">TypeScript</option>
+                        <option value="json">JSON</option>
                         <option value="html">HTML</option>
                         <option value="css">CSS</option>
-                        <option value="json">JSON</option>
                         <option value="python">Python</option>
+                        <option value="csharp">C#</option>
                         <option value="java">Java</option>
                         <option value="cpp">C++</option>
-                        <option value="csharp">C#</option>
-                        <option value="sql">SQL</option>
                         <option value="xml">XML</option>
                         <option value="markdown">Markdown</option>
                         <option value="plaintext">Plain Text</option>
@@ -170,54 +207,106 @@
             </header>
 
             <main class="editor-container">
-                <div class="editor-header">
+                <div class="editor-header diff-merge-header">
+                    <!-- Left Pane (Original) Controls -->
                     <div class="pane-title">
-                        <span id="original-pane-label">Original</span>
-                        <button id="upload-original-btn" class="pane-upload-btn" title="Upload Original File">
-                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-                                <polyline points="17 8 12 3 7 8"/>
-                                <line x1="12" y1="3" x2="12" y2="15"/>
-                            </svg>
-                        </button>
-                        <input type="file" id="original-file-input" hidden>
+                        <div class="pane-title-left">
+                            <span class="pane-side-indicator left-side-dot"></span>
+                            <span id="original-pane-label">Original</span>
+                        </div>
+                        <div class="pane-actions">
+                            <button id="upload-original-btn" class="pane-upload-btn" title="Upload Original File">
+                                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                                    <polyline points="17 8 12 3 7 8"/>
+                                    <line x1="12" y1="3" x2="12" y2="15"/>
+                                </svg>
+                                <span>Upload</span>
+                            </button>
+                            <input type="file" id="original-file-input" hidden>
+                            <button id="undo-original-btn" class="pane-upload-btn" title="Undo in Original Pane (Ctrl+Z)">↶ Undo</button>
+                            <button id="copy-original-btn" class="pane-upload-btn" title="Copy Original Content">Copy</button>
+                        </div>
                     </div>
-                    <div class="pane-title">
-                        <span id="modified-pane-label">Modified</span>
-                        <button id="upload-modified-btn" class="pane-upload-btn" title="Upload Modified File">
-                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-                                <polyline points="17 8 12 3 7 8"/>
-                                <line x1="12" y1="3" x2="12" y2="15"/>
-                            </svg>
+
+                    <!-- Center Active Hunk Merge Toolbar: Compact < = > Buttons (Hidden by default when In-Code is priority) -->
+                    <div id="hunk-merge-toolbar" class="hunk-merge-toolbar" style="display: none;">
+                        <button id="hunk-pull-left-btn" class="hunk-symbol-btn pull-left" title="Move Current Change Right → Left (Alt+Left)">
+                            &lt;
                         </button>
-                        <input type="file" id="modified-file-input" hidden>
+                        <button id="hunk-merge-both-btn" class="hunk-symbol-btn merge-both" title="Merge Both Left &amp; Right Changes (Alt+M)">
+                            =
+                        </button>
+                        <button id="hunk-push-right-btn" class="hunk-symbol-btn push-right" title="Move Current Change Left → Right (Alt+Right)">
+                            &gt;
+                        </button>
+                    </div>
+
+                    <!-- Right Pane (Modified) Controls -->
+                    <div class="pane-title">
+                        <div class="pane-title-left">
+                            <span class="pane-side-indicator right-side-dot"></span>
+                            <span id="modified-pane-label">Modified</span>
+                        </div>
+                        <div class="pane-actions">
+                            <button id="upload-modified-btn" class="pane-upload-btn" title="Upload Modified File">
+                                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                                    <polyline points="17 8 12 3 7 8"/>
+                                    <line x1="12" y1="3" x2="12" y2="15"/>
+                                </svg>
+                                <span>Upload</span>
+                            </button>
+                            <input type="file" id="modified-file-input" hidden>
+                            <button id="undo-modified-btn" class="pane-upload-btn" title="Undo in Modified Pane (Ctrl+Z)">↶ Undo</button>
+                            <button id="copy-modified-btn" class="pane-upload-btn" title="Copy Modified Content">Copy</button>
+                        </div>
                     </div>
                 </div>
                 <div id="diff-editor" class="monaco-editor-container"></div>
             </main>
         </section>
 
+        <!-- VIEW 2: FORMATTER -->
         <section id="view-format" class="view">
             <header class="app-header">
                 <div class="logo">
-                    <h1>Formatter</h1>
+                    <h1>Code Formatter</h1>
+                    <span class="header-subtitle">Format, minify & unescape JSON, SQL, and XML</span>
                 </div>
                 <div class="controls">
+                    <button id="format-sample-btn" class="control-item sample-btn" title="Load sample payload">
+                        ⚡ Load Sample
+                    </button>
                     <select id="format-language-selector" class="control-item">
                         <option value="json">JSON</option>
+                        <option value="sql">SQL (T-SQL)</option>
                         <option value="xml">XML</option>
                     </select>
-                    <button id="format-btn" class="control-item" aria-label="Format Code">Format</button>
-                    <button id="unescape-btn" class="control-item" aria-label="Unescape JSON">Unescape</button>
+                    <button id="format-btn" class="control-item primary-btn" aria-label="Format Code">Prettify</button>
+                    <button id="minify-btn" class="control-item" aria-label="Minify Code" title="Compact into a single line">Minify</button>
+                    <button id="unescape-btn" class="control-item" aria-label="Unescape JSON" title="Unescape stringified payload">Unescape</button>
+                    <button id="escape-btn" class="control-item" aria-label="Escape String" title="Escape into JSON string literal">Escape</button>
+                    <button id="format-clear-btn" class="control-item" aria-label="Clear">Clear</button>
+                    <div class="header-divider"></div>
                     <button id="copy-btn" class="control-item" aria-label="Copy Code">Copy</button>
                     <button id="download-btn" class="control-item" aria-label="Download Code">Download</button>
                 </div>
             </header>
             <main class="editor-container">
                 <div class="editor-header">
-                    <div class="pane-title">Input</div>
-                    <div class="pane-title">Output</div>
+                    <div class="pane-title">
+                        <span>Input (Paste or Upload file)</span>
+                        <button id="format-upload-btn" class="pane-upload-btn" title="Upload File to Format">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                            <span>Upload</span>
+                        </button>
+                        <input type="file" id="format-file-input" accept=".json,.sql,.xml,.txt" hidden>
+                    </div>
+                    <div class="pane-title">
+                        <span>Formatted Output</span>
+                        <span id="format-status-pill" class="status-pill valid">Ready</span>
+                    </div>
                 </div>
                 <div class="editors-row">
                     <div id="format-input" class="single-editor-pane"></div>
@@ -227,14 +316,19 @@
             </main>
         </section>
 
+        <!-- VIEW 3: SHEET TO SQL -->
         <section id="view-sql-gen" class="view">
             <header class="app-header">
                 <div class="logo">
                     <h1>Sheet to SQL</h1>
+                    <span class="header-subtitle">Infer T-SQL schema & generate batched INSERT scripts</span>
                 </div>
                 <div class="controls">
-                    <button id="sql-copy-btn" class="control-item" aria-label="Copy SQL">Copy</button>
-                    <button id="sql-download-btn" class="control-item" aria-label="Download SQL">Download</button>
+                    <button id="sql-sample-btn" class="control-item sample-btn" title="Load sample Employee dataset">
+                        ⚡ Load Sample Sheet
+                    </button>
+                    <button id="sql-copy-btn" class="control-item" aria-label="Copy SQL">Copy SQL</button>
+                    <button id="sql-download-btn" class="control-item" aria-label="Download SQL">Download .sql</button>
                 </div>
             </header>
             <main class="editor-container no-scroll-main">
@@ -242,8 +336,8 @@
                     <div id="drop-zone" class="drop-zone">
                         <input type="file" id="file-upload" accept=".xlsx, .xls, .csv" hidden>
                         <div class="drop-text">
-                            <p>Drag & Drop your sheet here</p>
-                            <span class="sub-text">or click to browse (.xlsx, .csv)</span>
+                            <p>📁 Drag & Drop your Excel or CSV file here</p>
+                            <span class="sub-text">or click to browse (.xlsx, .xls, .csv) — or click "⚡ Load Sample Sheet" above</span>
                         </div>
                     </div>
                 </div>
@@ -254,15 +348,23 @@
                     </div>
                     <div class="option-item">
                         <label for="table-name">Table Name:</label>
-                        <input type="text" id="table-name" value="#TempTable" class="bg-input">
+                        <input type="text" id="table-name" value="#TempTable" class="bg-input" style="width: 150px;">
                     </div>
                     <div class="option-item">
                         <input type="checkbox" id="header-row" checked>
-                        <label for="header-row">Headers</label>
+                        <label for="header-row">First Row Headers</label>
                     </div>
                     <div class="option-item">
                         <input type="checkbox" id="sql-sanitize-headers">
                         <label for="sql-sanitize-headers" title="Replace dots (.) and special characters with underscore (_)">Sanitize Headers</label>
+                    </div>
+                    <div class="option-item">
+                        <input type="checkbox" id="sql-include-drop" checked>
+                        <label for="sql-include-drop" title="Include IF OBJECT_ID IS NOT NULL DROP TABLE">DROP IF EXISTS</label>
+                    </div>
+                    <div class="option-item">
+                        <input type="checkbox" id="sql-auto-regen" checked>
+                        <label for="sql-auto-regen" title="Automatically regenerate SQL when options or columns change">Auto-Generate</label>
                     </div>
                     <div class="option-item">
                         <button id="generate-sql-btn" class="control-item primary-btn">Generate SQL</button>
@@ -272,12 +374,16 @@
                 <div id="sql-preview-section" class="preview-section preview-collapsed" style="display: none;">
                     <div class="preview-toolbar">
                         <div class="preview-title">
-                            <span>📊 Data Preview &amp; Column Selection</span>
+                            <span>📊 Data Preview, Column Selection &amp; Type Overrides</span>
                             <span id="sql-column-count-badge" class="preview-badge">0 selected</span>
+                            <div class="preview-search-box">
+                                <input type="text" id="sql-col-search" placeholder="Filter columns..." class="mini-search-input">
+                            </div>
                         </div>
                         <div class="preview-actions">
                             <button id="sql-select-all-btn" class="mini-btn" type="button">Select All</button>
                             <button id="sql-deselect-all-btn" class="mini-btn" type="button">Deselect All</button>
+                            <button id="sql-reset-types-btn" class="mini-btn" type="button" title="Reset manual data type overrides">Reset Types</button>
                             <button id="sql-toggle-preview-btn" class="mini-btn" type="button">Expand ▼</button>
                         </div>
                     </div>
@@ -288,19 +394,24 @@
                 </div>
 
                 <div class="editor-header">
-                    <div class="pane-title">Generated SQL Script</div>
+                    <div class="pane-title">Generated T-SQL Script</div>
                 </div>
-                <div id="sql-output" class="monaco-editor-container" style="min-height: 350px; flex: 1;"></div>
+                <div id="sql-output" class="monaco-editor-container" style="min-height: 320px; flex: 1;"></div>
             </main>
         </section>
 
+        <!-- VIEW 4: SHEET TO JSON & SSMS -->
         <section id="view-json-gen" class="view">
             <header class="app-header">
                 <div class="logo">
-                    <h1>Sheet to JSON & SSMS Script</h1>
+                    <h1>Sheet to JSON &amp; SSMS Script</h1>
+                    <span class="header-subtitle">Generate SSMS OPENJSON scripts, JSON arrays, or MongoDB inserts</span>
                 </div>
                 <div class="controls">
-                    <button id="json-copy-btn" class="control-item" aria-label="Copy Script">Copy</button>
+                    <button id="json-sample-btn" class="control-item sample-btn" title="Load sample Orders dataset">
+                        ⚡ Load Sample Sheet
+                    </button>
+                    <button id="json-copy-btn" class="control-item" aria-label="Copy Script">Copy Output</button>
                     <button id="json-download-btn" class="control-item" aria-label="Download Script">Download</button>
                 </div>
             </header>
@@ -309,7 +420,7 @@
                     <div id="json-drop-zone" class="drop-zone">
                         <input type="file" id="json-file-upload" accept=".xlsx, .xls, .csv" hidden>
                         <div class="drop-text">
-                            <p>Drag & Drop your sheet here</p>
+                            <p>📁 Drag & Drop your Excel or CSV file here</p>
                             <span class="sub-text">or click to browse (.xlsx, .csv) for JSON / SSMS OPENJSON script</span>
                         </div>
                     </div>
@@ -321,7 +432,7 @@
                     </div>
                     <div class="option-item">
                         <label for="json-table-name">Table Name:</label>
-                        <input type="text" id="json-table-name" value="#TempTable" class="bg-input">
+                        <input type="text" id="json-table-name" value="#TempTable" class="bg-input" style="width: 140px;">
                     </div>
                     <div class="option-item">
                         <label for="json-output-mode">Output Mode:</label>
@@ -344,6 +455,10 @@
                         <label for="json-prettify">Prettify JSON</label>
                     </div>
                     <div class="option-item">
+                        <input type="checkbox" id="json-auto-regen" checked>
+                        <label for="json-auto-regen">Auto-Generate</label>
+                    </div>
+                    <div class="option-item">
                         <button id="generate-json-script-btn" class="control-item primary-btn">Generate</button>
                     </div>
                 </div>
@@ -351,12 +466,16 @@
                 <div id="json-preview-section" class="preview-section preview-collapsed" style="display: none;">
                     <div class="preview-toolbar">
                         <div class="preview-title">
-                            <span>📊 Data Preview &amp; Column Selection</span>
+                            <span>📊 Data Preview, Column Selection &amp; Type Overrides</span>
                             <span id="json-column-count-badge" class="preview-badge">0 selected</span>
+                            <div class="preview-search-box">
+                                <input type="text" id="json-col-search" placeholder="Filter columns..." class="mini-search-input">
+                            </div>
                         </div>
                         <div class="preview-actions">
                             <button id="json-select-all-btn" class="mini-btn" type="button">Select All</button>
                             <button id="json-deselect-all-btn" class="mini-btn" type="button">Deselect All</button>
+                            <button id="json-reset-types-btn" class="mini-btn" type="button">Reset Types</button>
                             <button id="json-toggle-preview-btn" class="mini-btn" type="button">Expand ▼</button>
                         </div>
                     </div>
@@ -367,18 +486,23 @@
                 </div>
 
                 <div class="editor-header">
-                    <div class="pane-title">Generated JSON / SSMS Script</div>
+                    <div class="pane-title">Generated JSON / SSMS OPENJSON Script</div>
                 </div>
-                <div id="json-output" class="monaco-editor-container" style="min-height: 350px; flex: 1;"></div>
+                <div id="json-output" class="monaco-editor-container" style="min-height: 320px; flex: 1;"></div>
             </main>
         </section>
 
+        <!-- VIEW 5: DATA TO EXCEL -->
         <section id="view-excel-gen" class="view">
             <header class="app-header">
                 <div class="logo">
-                    <h1>Sheet to Excel</h1>
+                    <h1>Data to Excel Converter</h1>
+                    <span class="header-subtitle">Preview & convert JSON arrays or CSV text into Excel workbooks</span>
                 </div>
                 <div class="controls">
+                    <button id="excel-sample-btn" class="control-item sample-btn" title="Load sample JSON data">
+                        ⚡ Load Sample
+                    </button>
                     <div class="option-item">
                         <label for="excel-file-name">File Name:</label>
                         <input type="text" id="excel-file-name" value="data_export" class="bg-input" style="width: 130px;">
@@ -387,41 +511,64 @@
                         <label for="excel-sheet-name">Sheet Name:</label>
                         <input type="text" id="excel-sheet-name" value="Sheet1" class="bg-input" style="width: 100px;">
                     </div>
-                    <button id="export-excel-btn" class="control-item primary-btn">Export to Excel (.xlsx)</button>
+                    <button id="export-excel-btn" class="control-item primary-btn">Export .xlsx</button>
+                    <button id="export-csv-btn" class="control-item" title="Download as CSV">Export .csv</button>
                 </div>
             </header>
             <main class="editor-container">
                 <div class="editor-header">
-                    <div class="pane-title">JSON Array / CSV Input Data</div>
+                    <div class="pane-title">
+                        <span>JSON Array / CSV Input (or Upload file)</span>
+                        <button id="excel-upload-btn" class="pane-upload-btn" title="Upload JSON or CSV File">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                            <span>Upload</span>
+                        </button>
+                        <input type="file" id="excel-file-input" accept=".json,.csv,.txt" hidden>
+                    </div>
+                    <div class="pane-title">
+                        <span>Live Table Preview</span>
+                        <span id="excel-row-count-badge" class="status-pill valid">0 rows</span>
+                    </div>
                 </div>
                 <div class="editors-row">
-                    <div id="excel-input" class="single-editor-pane" style="width: 100%;"></div>
+                    <div id="excel-input" class="single-editor-pane"></div>
+                    <div class="resizer" id="excel-resizer" title="Drag to resize"></div>
+                    <div id="excel-preview-pane" class="single-editor-pane excel-preview-container">
+                        <div id="excel-live-table-wrapper" class="excel-live-table-wrapper">
+                            <table id="excel-live-table" class="preview-table"></table>
+                        </div>
+                    </div>
                 </div>
             </main>
         </section>
 
+        <!-- VIEW 6: HTML RENDERER -->
         <section id="view-html-render" class="view">
             <header class="app-header">
                 <div class="logo">
-                    <h1>HTML Renderer & Preview</h1>
+                    <h1>HTML Renderer &amp; Preview</h1>
+                    <span class="header-subtitle">Live HTML/CSS/JS sandbox with instant preview</span>
                 </div>
                 <div class="controls">
+                    <button id="html-sample-btn" class="control-item sample-btn" title="Load sample dashboard HTML">
+                        ⚡ Load Sample
+                    </button>
                     <div class="option-item">
                         <input type="checkbox" id="html-auto-update" checked>
                         <label for="html-auto-update">Auto Update</label>
                     </div>
                     <button id="html-prettify-btn" class="control-item" aria-label="Prettify HTML">Prettify</button>
-                    <button id="html-inline-btn" class="control-item" aria-label="Inline HTML">Inline</button>
+                    <button id="html-inline-btn" class="control-item" aria-label="Inline HTML">Minify</button>
                     <button id="html-render-btn" class="control-item primary-btn" aria-label="Render HTML">Render</button>
-                    <button id="html-open-tab-btn" class="control-item" aria-label="Open in New Tab">Open in New Tab</button>
+                    <button id="html-open-tab-btn" class="control-item" aria-label="Open in New Tab">New Tab ↗</button>
                     <button id="html-copy-btn" class="control-item" aria-label="Copy HTML">Copy</button>
                     <button id="html-download-btn" class="control-item" aria-label="Download HTML">Download</button>
                 </div>
             </header>
             <main class="editor-container">
                 <div class="editor-header">
-                    <div class="pane-title">HTML Code Input</div>
-                    <div class="pane-title">Rendered Preview</div>
+                    <div class="pane-title">HTML / CSS / JS Code Input</div>
+                    <div class="pane-title">Live Sandboxed Preview</div>
                 </div>
                 <div class="editors-row">
                     <div id="html-input" class="single-editor-pane"></div>
@@ -432,8 +579,32 @@
                 </div>
             </main>
         </section>
-
     </div>
+
+    <!-- KEYBOARD SHORTCUTS & HELP MODAL -->
+    <div id="help-modal-overlay" class="modal-overlay" style="display: none;">
+        <div class="modal-card">
+            <div class="modal-header">
+                <h3>⌨️ Keyboard Shortcuts &amp; Quick Guide</h3>
+                <button id="help-modal-close" class="icon-btn control-item">✕</button>
+            </div>
+            <div class="modal-body">
+                <div class="shortcuts-grid">
+                    <div class="shortcut-item"><kbd>Alt + 1..6</kbd><span>Switch between tools</span></div>
+                    <div class="shortcut-item"><kbd>F7</kbd> / <kbd>Shift + F7</kbd><span>Next / Previous Difference in Diff Checker</span></div>
+                    <div class="shortcut-item"><kbd>Alt + N</kbd> / <kbd>Alt + P</kbd><span>Next / Previous Difference</span></div>
+                    <div class="shortcut-item"><kbd>Alt + Right</kbd><span>Push current diff hunk Left → Right</span></div>
+                    <div class="shortcut-item"><kbd>Alt + Left</kbd><span>Pull current diff hunk Right → Left</span></div>
+                    <div class="shortcut-item"><kbd>Alt + M</kbd><span>Merge Both (Keep Left &amp; Right versions)</span></div>
+                    <div class="shortcut-item"><kbd>Ctrl + Z</kbd> / <kbd>Ctrl + Y</kbd><span>Undo / Redo merge or edit in active pane</span></div>
+                    <div class="shortcut-item"><kbd>Esc</kbd><span>Close Modal</span></div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- TOAST NOTIFICATION CONTAINER -->
+    <div id="toast-container" class="toast-container"></div>
 
     <!-- Monaco Editor Loader -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/monaco-editor/0.44.0/min/vs/loader.min.js"></script>
